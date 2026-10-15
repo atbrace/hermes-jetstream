@@ -65,8 +65,9 @@ class WakePipeline:
             await _ack(msg)
             return "skipped_not_allowed"          # config drift guard, ack so it stops redelivering
         if not self._rate_ok(route, now):
-            await _nak(msg, delay=5.0)            # storm rail: delay, don't drop
-            return "throttled"
+            await _ack(msg)                       # storm rail: shed = ack + drop
+            # ponytail: shed loses events by design; if demand ever needs delayed replay, use max_deliver=-1 + trimmed backoff (option (b), hjs-632)
+            return "shed"
         if not self._interval_ok(route, now):
             await _ack(msg)
             return "coalesced"
@@ -97,10 +98,3 @@ async def _ack(msg) -> None:
         await msg.ack()
     except Exception:
         pass  # ack on a non-JetStream or closed msg is benign; consumer redelivers if real
-
-
-async def _nak(msg, delay: float = 5.0) -> None:
-    try:
-        await msg.nak(delay=delay)
-    except Exception:
-        pass

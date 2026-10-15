@@ -182,15 +182,18 @@ class WakePipelineGuards(unittest.TestCase):
         self.assertEqual(n, 1)          # non-empty dedupe key -> the claim row exists
         self.assertEqual(status, "done")
 
-    def test_rate_throttle_naks(self):
+    def test_rate_throttle_sheds_acked(self):
         route = WakeRoute(name="burst", subject="ci.result", rate_per_min=1)
         pipe = WakePipeline({"ci.result": route}, ["ci.>"],
                             WakeLedger(Path(tempfile.mkdtemp()) / "l.db"),
                             lambda r, p: asyncio.sleep(0), "p", "N")
-        v1 = self.run_async(pipe.handle_message(FakeMsg(b"{}", seq=1), route))
-        v2 = self.run_async(pipe.handle_message(FakeMsg(b"{}", seq=2), route))
+        msg1 = FakeMsg(b"{}", seq=1)
+        msg2 = FakeMsg(b"{}", seq=2)
+        v1 = self.run_async(pipe.handle_message(msg1, route))
+        v2 = self.run_async(pipe.handle_message(msg2, route))
         self.assertEqual(v1, "dispatched")
-        self.assertEqual(v2, "throttled")
+        self.assertEqual(v2, "shed")
+        self.assertTrue(msg2.acked and not msg2.naked)  # shed = ack + drop, never naked
 
     def test_dispatch_failure_leaves_unacked(self):
         pipe, route = self._pipe(dispatch=lambda r, p: _boom())
@@ -198,18 +201,19 @@ class WakePipelineGuards(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.run_async(pipe.handle_message(msg, route))
 
-    def test_burst_beyond_bucket_naks_not_drops(self):
+    def test_burst_beyond_bucket_sheds_acked(self):
         """Storm gate: 10 msgs at rate 3/min -> exactly 3 dispatched; every excess
-        NAKed (delayed redelivery), nothing silently dropped or acked-away."""
+        shed (acked + dropped, same as the coalesced path), nothing left naked."""
         route = WakeRoute(name="storm", subject="ci.result", rate_per_min=3)
         pipe = WakePipeline({"ci.result": route}, ["ci.>"],
                             WakeLedger(Path(tempfile.mkdtemp()) / "l.db"),
                             lambda r, p: asyncio.sleep(0), "p", "N")
-        verdicts = [self.run_async(pipe.handle_message(FakeMsg(b"{}", seq=i), route))
-                    for i in range(1, 11)]
+        msgs = [FakeMsg(b"{}", seq=i) for i in range(1, 11)]
+        verdicts = [self.run_async(pipe.handle_message(m, route)) for m in msgs]
         self.assertEqual(verdicts.count("dispatched"), 3)
-        self.assertEqual(verdicts.count("throttled"), 7)
-        self.assertTrue(all(v in ("dispatched", "throttled") for v in verdicts))
+        self.assertEqual(verdicts.count("shed"), 7)
+        self.assertTrue(all(v in ("dispatched", "shed") for v in verdicts))
+        self.assertTrue(all(m.acked and not m.naked for m in msgs))  # everything acked
 
     def test_ack_after_dispatch_crash_redelivers(self):
         """Claim-then-ack: a dispatch crash leaves the msg unacked (server redelivers)

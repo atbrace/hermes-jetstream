@@ -17,5 +17,6 @@ MVP + all V1 gates except final catalog submission.
 - Generality: zero environment assumptions (CI grep-gate), never creates/mutates
   user streams, all infra values are config.
 
-Known limits: watches are gateway-process in-memory (TTL ≤6h, cap 16); DLQ on
-exhausted wake retries not yet implemented (excess NAKs + `max_deliver=5` + backoff).
+Known limits: watches are gateway-process in-memory (TTL ≤6h, cap 16); wake rate rail
+sheds (ack+drop) above `rate_per_min` (hjs-632); DLQ on exhausted crash-recovery
+retries not yet implemented (`max_deliver=5` + backoff).
