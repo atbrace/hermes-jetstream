@@ -28,6 +28,6 @@ All keys live under `plugins.entries.hermes-jetstream.settings` (platform config
 | `tls.ca` | str | system CA | CA bundle path. |
 | `tls.cert` / `tls.key` | str | `""` | Client cert pair for mTLS. |
 | `tls.insecure_skip_verify` | bool | `false` | Testing escape hatch; disables hostname + chain verification. |
-| `lifecycle_emit` | list | `[]` | Mirror these lifecycle kinds to `<lifecycle_prefix>.<kind>`: `session.start`, `session.end`, `session.reset`, `agent.turn.start`, `subagent.stop`, `subagent.stop.error`, `tool.result`, `agent.run.end`. Requires the prefix in `publish_allowed` or the tap stays disabled. |
+| `lifecycle_emit` | list | `[]` | Mirror these lifecycle kinds to `<lifecycle_prefix>.<kind>`: `session.start`, `session.end`, `session.reset`, `agent.turn.start`, `subagent.stop`, `agent.stopped`. Requires the prefix in `publish_allowed` or the tap stays disabled. |
 | `lifecycle_prefix` | str | `hermes` | Subject prefix for lifecycle mirror events. |
 | `max_payload_bytes` | int | `32768` | Client-side emit cap (server `max_payload` also applies). |

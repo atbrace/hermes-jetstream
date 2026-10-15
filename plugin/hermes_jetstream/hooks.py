@@ -92,6 +92,9 @@ def register_hooks(ctx, settings, profile_name: str, get_bus) -> None:
         return
     tap = LifecycleTap(settings, profile_name, get_bus)
     enabled = set(settings.lifecycle_emit)
+    unknown = sorted(enabled - set(_TAPS))
+    if unknown:
+        logger.warning("[jetstream] lifecycle_emit: unknown kind(s) ignored: %s", ", ".join(unknown))
     for kind, (hook_name, _fields) in _TAPS.items():
         if kind in enabled:
             ctx.register_hook(hook_name, tap._emit(kind))
