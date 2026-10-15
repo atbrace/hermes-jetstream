@@ -12,9 +12,10 @@ license: MIT
 homepage: https://github.com/atbrace/hermes-jetstream
 requires_hermes: ">=0.21.4"
 python_dependencies:
-  - nats-py>=2.7
+  - nats-py>=2.7,<3
 provides_tools:
   - nats_publish
+  - nats_fetch
 config_schema:
   servers: { type: list, default: ["localhost:4222"] }
   stream: { type: str, default: "hermes" }
