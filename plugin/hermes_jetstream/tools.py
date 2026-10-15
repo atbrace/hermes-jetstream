@@ -45,6 +45,29 @@ def _active_bus():
         return []
 
 
+class BusLoopGone(Exception):
+    """Live bus lost its loop between pick and use — caller falls back to ephemeral."""
+
+
+async def _on_bus_loop(bus, coro_factory):
+    """Run a bus call on the bus's OWN loop. Tool handlers reach us via _run_async:
+    from a gateway worker thread asyncio.run makes a foreign loop where the
+    connection's futures never resolve (publish timed out at 5.00s every time while
+    the message still hit the wire — a retry could duplicate). Same loop: await
+    directly; else hop with run_coroutine_threadsafe + wrap_future (a loop is always
+    running in our thread: _run_async drives us under asyncio.run or create_task)."""
+    loop = bus.loop
+    if loop is None or not loop.is_running():
+        raise BusLoopGone()
+    if asyncio.get_running_loop() is loop:
+        return await coro_factory()
+    try:
+        fut = asyncio.run_coroutine_threadsafe(coro_factory(), loop)
+    except RuntimeError:
+        raise BusLoopGone()  # loop stopped between check and submit
+    return await asyncio.wrap_future(fut)
+
+
 class JetstreamTools:
     def __init__(self, settings, ctx):
         self.settings = settings
@@ -93,7 +116,11 @@ class JetstreamTools:
     async def _publish(self, subject: str, body: bytes):
         bus = next((b for b in _active_bus() if b.connected), None)
         if bus is not None:
-            return await bus.publish(subject, body, headers={"Nats-Msg-Id": _msg_id(body)})
+            try:
+                return await _on_bus_loop(bus, lambda: bus.publish(
+                    subject, body, headers={"Nats-Msg-Id": _msg_id(body)}))
+            except BusLoopGone:
+                pass  # connection vanished between pick and use: ephemeral path below
         return await self._ephemeral(lambda js: js.publish(subject, body, timeout=5.0,
                                                           headers={"Nats-Msg-Id": _msg_id(body)}))
 
@@ -125,7 +152,12 @@ class JetstreamTools:
     async def _fetch(self, subject: str, timeout: float, batch: int):
         bus = next((b for b in _active_bus() if b.connected), None)
         if bus is not None:
-            return await bus.fetch(subject, timeout=timeout, batch=batch)
+            try:
+                return await _on_bus_loop(bus, lambda: bus.fetch(subject, timeout=timeout,
+                                                                 batch=batch))
+            except BusLoopGone:
+                pass  # connection vanished between pick and use: ephemeral path below
+
         async def _go(js):
             psub = await js.pull_subscribe(subject, stream=self.settings.stream)
             try:
