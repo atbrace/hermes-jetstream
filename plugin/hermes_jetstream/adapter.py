@@ -11,7 +11,7 @@ import asyncio
 import logging
 from typing import Any, Dict, Optional
 
-from .bus import NatsBus, HAVE_NATS, _msg_meta
+from .bus import NatsBus, HAVE_NATS
 from .config import Settings
 from .envelope import GATEWAY_NONCE
 from .ledger import WakeLedger
