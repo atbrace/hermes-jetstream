@@ -23,11 +23,15 @@ servers: ["localhost:4222"]        # any nats-client-url
 stream: hermes                     # must bind your subject space
 publish_allowed: ["hermes.agent.>"]     # empty = publishing DENIED
 subscribe_allowed: ["ci.>", "hermes.>"] # gates wake routes AND nats_fetch
-wake:                                       # subject -> session wake routes
+wake:                                       # subject -> wake routes
   - name: ci-red
     subject: ci.result.red
     prompt: "CI went red: {payload}. Investigate."
     rate_per_min: 5
+  - name: deploy-audit                  # event job: fire an existing cron job instead
+    subject: deploy.finished
+    job: nightly-audit                  # cron job id or name (execute_job_for_event rail)
+    profile: homelab                    # optional: profile owning the job
 auth: { token: "${NATS_TOKEN}" }            # or creds/nkey/user; secrets stay in .env
 tls: { enabled: true, ca: /etc/ssl/nats-ca.pem }
 lifecycle_emit: [session.start, session.end, agent.turn.start]  # mirror to hermes.<kind>

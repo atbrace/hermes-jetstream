@@ -41,7 +41,9 @@ def _subject_list(value: Any) -> List[str]:
 
 @dataclass
 class WakeRoute:
-    """One subject->session wake route. Template-rendered prompt (never raw payload concat)."""
+    """One subject->wake route. Template-rendered prompt (never raw payload concat).
+    With `job` set it's an EVENT JOB: fire that cron job (execute_job_for_event rail,
+    same as webhook cron_job routes) instead of waking a session."""
     name: str
     subject: str                      # must match subscribe_allowed
     durable: str = ""                 # default: jetstream-<name>
@@ -49,6 +51,8 @@ class WakeRoute:
     max_payload_chars: int = 2000     # payload truncation into the prompt
     rate_per_min: int = 10            # per-route token bucket
     min_interval_s: float = 0.0       # coalescing: drop events closer than this
+    job: str = ""                     # cron job id/name -> event job
+    profile: str = ""                 # profile owning the job (event jobs only)
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "WakeRoute":
@@ -65,6 +69,8 @@ class WakeRoute:
             max_payload_chars=max(64, int(d.get("max_payload_chars", cls.max_payload_chars))),
             rate_per_min=max(1, int(d.get("rate_per_min", cls.rate_per_min))),
             min_interval_s=max(0.0, float(d.get("min_interval_s", 0.0))),
+            job=str(d.get("job") or "").strip(),
+            profile=str(d.get("profile") or "").strip(),
         )
 
 

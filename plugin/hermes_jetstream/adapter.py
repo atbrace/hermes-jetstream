@@ -148,6 +148,9 @@ def _build_class():
             return False
 
         async def _dispatch(self, route, prompt: str) -> None:
+            if route.job:
+                await self._fire_event_job(route, prompt)
+                return
             if not self._message_handler:
                 raise RuntimeError("gateway message handler not attached yet")  # -> redelivery
             chat_id = f"jetstream:{route.name}"
@@ -156,6 +159,42 @@ def _build_class():
                                        user_name=route.name)
             event = _message_event(text=prompt, source=source)
             await self.handle_message(event)
+
+        async def _fire_event_job(self, route, prompt: str) -> None:
+            """Event job: fire a cron job on this event (webhook cron_job semantics:
+            transient per-run context, job's own prompt/skills/model/delivery apply,
+            at-most-once claiming inside the cron layer; bad job ref -> logged, acked,
+            same as webhook — a redelivery storm can't revive a deleted job).
+            Queued, not awaited — a run is minutes long (webhook 202 contract)."""
+            import asyncio
+            from tools.cronjob_tools import execute_job_for_event
+
+            async def _run():
+                try:
+                    with self._profile_scope(route.profile):
+                        # to_thread copies contextvars, so the profile scope follows (webhook precedent).
+                        result = await asyncio.to_thread(execute_job_for_event, route.job,
+                            f"This run was triggered by JetStream event on '{route.subject}' "
+                            f"via route '{route.name}' (not the schedule).\n\n{prompt}")
+                    if not result.get("success"):
+                        logger.warning("[jetstream] event job=%s route=%s incomplete: %s",
+                                       route.job, route.name, result.get("error"))
+                except Exception:
+                    logger.exception("[jetstream] event job=%s route=%s failed", route.job, route.name)
+
+            task = asyncio.create_task(_run())
+            self._background_tasks = getattr(self, "_background_tasks", set())
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+
+        @staticmethod
+        def _profile_scope(profile: str):
+            from contextlib import nullcontext
+            if not profile:
+                return nullcontext()
+            from gateway.run import _profile_runtime_scope
+            from hermes_cli.profiles import get_profile_dir
+            return _profile_runtime_scope(get_profile_dir(profile))
 
         async def disconnect(self) -> None:
             task = getattr(self, "_sweep_task", None)
