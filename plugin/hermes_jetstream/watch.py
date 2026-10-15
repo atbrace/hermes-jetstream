@@ -51,7 +51,7 @@ class WatchRegistry:
         self.policy = policy
         self.open_sub = open_sub        # async (subject, cb) -> sub
         self.close_sub = close_sub      # async (sub) -> None
-        self.inject = inject            # (session_id, text) -> bool
+        self.inject = inject            # async (session_id, text) -> bool
         self.max_watches = max_watches
         self.default_ttl_s = default_ttl_s
         self.max_ttl_s = max_ttl_s
@@ -87,7 +87,7 @@ class WatchRegistry:
             if w.note:
                 text += f" (watch note: {w.note})"
             try:
-                if not self.inject(w.session_id, text):
+                if not await self.inject(w.session_id, text):
                     logger.info("[jetstream] watch %s injection refused; closing", w.id)
                     await self.remove(w.id)
             except Exception:

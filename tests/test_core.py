@@ -247,7 +247,7 @@ async def _boom():
 
 
 class WatchRegistryLogic(unittest.TestCase):
-    def _reg(self, allowed=("ci.>",), max_watches=3):
+    def _reg(self, allowed=("ci.>",), max_watches=3, inject_ok=True):
         from hermes_jetstream.watch import WatchRegistry
         subs = []
         injects = []
@@ -259,9 +259,9 @@ class WatchRegistryLogic(unittest.TestCase):
         async def close_sub(sub):
             sub.unsubscribed = True
 
-        def inject(sid, text):
+        async def inject(sid, text):  # async fake mirrors production async inject
             injects.append((sid, text))
-            return True
+            return inject_ok
         reg = WatchRegistry(policy=SubjectPolicy(list(allowed)), open_sub=open_sub,
                             close_sub=close_sub, inject=inject, max_watches=max_watches)
         return reg, subs, injects
@@ -286,6 +286,13 @@ class WatchRegistryLogic(unittest.TestCase):
         self.assertTrue(w.expired)          # max_msgs hit
         asyncio.run(reg.sweep())
         self.assertEqual(reg.count(), 0)    # swept away
+
+    def test_inject_refused_closes_watch(self):
+        reg, subs, _ = self._reg(inject_ok=False)
+        asyncio.run(reg.add("ci.x", "s1"))
+        msg = types.SimpleNamespace(subject="ci.x", data=b"{}")
+        asyncio.run(reg._watches["w1"].sub.cb(msg))
+        self.assertEqual(reg.count(), 0)      # refused inject -> watch removed
 
     def test_ttl_expiry_sweep_and_cap(self):
         reg, subs, _ = self._reg(max_watches=1)
