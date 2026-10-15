@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List
 
 _ENV_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
@@ -164,7 +165,18 @@ class Settings:
         if self.token:
             kw["token"] = self.token
         elif self.creds:
-            kw["user_credentials"] = self.creds
+            # nats-py trap (hjs-bt0 drill): the user_credentials FILE path always
+            # reads a "BEGIN NATS USER JWT" block; a seed-only creds file makes it
+            # loop forever on EOF. Seed-only files route to nkeys_seed_str instead.
+            try:
+                text = Path(self.creds).read_text()
+            except OSError as exc:
+                raise ValueError(f"jetstream: creds file unreadable: {exc}") from exc
+            if "USER NKEY SEED" in text and "BEGIN NATS USER JWT" not in text:
+                seed = text.split("USER NKEY SEED-----", 1)[1].split("-----", 1)[0].strip()
+                kw["nkeys_seed_str"] = seed
+            else:
+                kw["user_credentials"] = self.creds
         elif self.nkey:
             kw["nkeys_seed_str"] = self.nkey
         elif self.user:

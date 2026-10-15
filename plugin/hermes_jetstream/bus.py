@@ -43,6 +43,10 @@ class NatsBus:
         self._disconnected_cb = disconnected_cb
         self._reconnected_cb = reconnected_cb
 
+    @staticmethod
+    async def _error_cb(exc) -> None:
+        logger.warning("[jetstream] client error: %s", exc)
+
     @property
     def connected(self) -> bool:
         return self._nc is not None and not self._nc.is_closed
@@ -59,13 +63,15 @@ class NatsBus:
     async def connect(self) -> None:
         if not HAVE_NATS:
             raise RuntimeError("nats-py is not installed; pip install 'nats-py>=2.7'")
+        reconnect = self.settings.reconnect_attempts != 0
         kwargs: Dict[str, Any] = dict(
             name=f"hermes-jetstream:{self.profile_name}",
-            allow_reconnect=True,
+            allow_reconnect=reconnect,
             reconnect_time_wait=2,
-            max_reconnect_attempts=self.settings.reconnect_attempts,
+            max_reconnect_attempts=self.settings.reconnect_attempts if reconnect else 1,
             connect_timeout=self.settings.connect_timeout_s,
             no_echo=True,  # same-connection loop guard (cross-connection guard = nonce ledger)
+            error_cb=self._error_cb,  # logger, never nats-py's stderr default
         )
         kwargs.update(self.settings.auth_kwargs())
         if self.settings.tls_enabled:
@@ -74,8 +80,21 @@ class NatsBus:
             kwargs["disconnected_cb"] = self._disconnected_cb
         if self._reconnected_cb:
             kwargs["reconnected_cb"] = self._reconnected_cb
-        self._nc = await nats.connect(self.settings.servers, **kwargs)
-        self._js = self._nc.jetstream()
+        # NATS() + nc.connect() (not module-level connect) so the instance is
+        # reachable to close() when connect raises: nats-py spawns its reconnect
+        # task BEFORE auth/TLS failures surface, and a refused client that is
+        # never closed retries forever in the background (auth_matrix proved it).
+        nc = nats.NATS()
+        try:
+            await nc.connect(self.settings.servers, **kwargs)
+        except BaseException:
+            try:
+                await nc.close(drain=False)
+            except BaseException:
+                pass  # half-open transport can raise CancelledError from wait_closed
+            raise
+        self._nc = nc
+        self._js = nc.jetstream()
         logger.info("[jetstream] connected to %s (stream=%s)", self.settings.servers, self.settings.stream)
 
     async def publish(self, subject: str, payload: bytes,

@@ -204,10 +204,20 @@ class Config(unittest.TestCase):
         self.assertEqual(merged.token, "s3cr3t")
 
     def test_auth_kwargs_precedence(self):
-        s = Settings(token="t", creds="/x.creds")
+        import tempfile
+        from pathlib import Path
+        d = tempfile.mkdtemp()
+        jwt_file = Path(d) / "u.creds"
+        jwt_file.write_text("-----BEGIN NATS USER JWT-----\neyJhbGciOiJlZDI1NTE5In0\n------END NATS USER JWT------\n")
+        seed_file = Path(d) / "seed.creds"
+        seed_file.write_text("-----BEGIN USER NKEY SEED-----\nSUAAA\n------END USER NKEY SEED------\n")
+        s = Settings(token="t", creds=str(jwt_file))
         self.assertEqual(s.auth_kwargs(), {"token": "t"})
-        s2 = Settings(creds="/x.creds")
-        self.assertEqual(s2.auth_kwargs(), {"user_credentials": "/x.creds"})
+        s2 = Settings(creds=str(jwt_file))
+        self.assertEqual(s2.auth_kwargs(), {"user_credentials": str(jwt_file)})
+        # seed-only file must NOT route to user_credentials (nats-py JWT reader hangs)
+        s2b = Settings(creds=str(seed_file))
+        self.assertEqual(s2b.auth_kwargs(), {"nkeys_seed_str": "SUAAA"})
         s3 = Settings(user="u", password="p")
         self.assertEqual(s3.auth_kwargs(), {"user": "u", "password": "p"})
         s4 = Settings(nkey="SUxxxx")
