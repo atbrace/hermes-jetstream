@@ -116,6 +116,7 @@ def _build_class():
                 try:
                     if self._watches:
                         await self._watches.sweep()
+                    self._ledger.prune()  # keep wake-claims.db bounded (7d done rows)
                 except asyncio.CancelledError:
                     raise
                 except Exception:
