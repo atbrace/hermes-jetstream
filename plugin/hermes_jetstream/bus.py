@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Callable, Coroutine, Dict, List, Optional, Tuple
+from typing import Any, Callable, Coroutine, Dict, List, Optional
 
 logger = logging.getLogger("hermes_jetstream.bus")
 
@@ -18,16 +18,6 @@ try:
     HAVE_NATS = True
 except ImportError:
     HAVE_NATS = False
-
-
-def _msg_meta(msg) -> Tuple[str, int, int]:
-    """(dedupe_key, stream_seq, delivery_attempt) — JetStream-only; core subs return ("",0,1)."""
-    try:
-        md = msg.metadata()
-        return (f"{md.stream}:{md.consumer}:{md.sequence.stream}",
-                md.sequence.stream, md.deliver_attempt)
-    except Exception:
-        return ("", 0, 1)
 
 
 class NatsBus:

@@ -86,8 +86,8 @@ class WakePipeline:
 
 def _msg_identity(msg):
     try:
-        md = msg.metadata()
-        return f"{md.stream}:{md.consumer}:{md.sequence.stream}", md.sequence.stream, md.deliver_attempt
+        md = msg.metadata  # property in nats-py, NOT a callable
+        return f"{md.stream}:{md.consumer}:{md.sequence.stream}", md.sequence.stream, md.num_delivered
     except Exception:
         return "", 0, 1
 

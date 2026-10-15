@@ -114,16 +114,16 @@ class Ledger(unittest.TestCase):
 class FakeMsg:
     def __init__(self, data: bytes, seq=1, stream="hermes", consumer="c", attempt=1):
         self.data = data
-        self._md = (f"{stream}:{consumer}:{seq}", seq, attempt)
+        self._md = (stream, consumer, seq, attempt)
         self.acked = False
         self.naked = False
 
-    def metadata(self):
-        class MD:
-            class sequence:
-                stream = self._md[1]
-            stream, consumer, deliver_attempt = self._md[0].split(":")[0], self._md[0].split(":")[1], self._md[2]
-        return MD()
+    @property
+    def metadata(self):  # nats-py: metadata is a property, not a method
+        stream, consumer, seq, attempt = self._md
+        return types.SimpleNamespace(
+            stream=stream, consumer=consumer, num_delivered=attempt,
+            sequence=types.SimpleNamespace(stream=seq, consumer=seq))
 
     async def ack(self):
         self.acked = True
@@ -160,6 +160,27 @@ class WakePipelineGuards(unittest.TestCase):
         self.assertEqual(self.run_async(pipe.handle_message(m1, route)), "dispatched")
         m2 = FakeMsg(b'{"data": 1}', seq=42)
         self.assertEqual(self.run_async(pipe.handle_message(m2, route)), "skipped_duplicate")
+
+    def test_redelivery_after_crash_claims_ledger(self):
+        """Redelivery on the REAL nats-py shape (metadata is a property, num_delivered):
+        first delivery dispatches+acks+claims; redelivery must skip AND the wake_claims
+        row must exist — a dead dedupe key writes no row (rowcount is the proof)."""
+        import sqlite3
+        db = Path(tempfile.mkdtemp()) / "l.db"
+        route = WakeRoute(name="r", subject="ci.result")
+        pipe = WakePipeline({"ci.result": route}, ["ci.>"], WakeLedger(db),
+                            lambda r, p: asyncio.sleep(0), "p", "N")
+        m1 = FakeMsg(b'{"data": 1}', seq=77, attempt=1)
+        self.assertEqual(self.run_async(pipe.handle_message(m1, route)), "dispatched")
+        self.assertTrue(m1.acked)
+        m2 = FakeMsg(b'{"data": 1}', seq=77, attempt=2)   # server redelivery, num_delivered=2
+        self.assertEqual(self.run_async(pipe.handle_message(m2, route)), "skipped_duplicate")
+        with sqlite3.connect(db) as c:
+            n, status = c.execute(
+                "SELECT COUNT(*), MAX(status) FROM wake_claims WHERE dedupe_key LIKE '%:77'"
+            ).fetchone()
+        self.assertEqual(n, 1)          # non-empty dedupe key -> the claim row exists
+        self.assertEqual(status, "done")
 
     def test_rate_throttle_naks(self):
         route = WakeRoute(name="burst", subject="ci.result", rate_per_min=1)
