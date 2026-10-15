@@ -3,8 +3,8 @@ connect -> publish (tool path) -> durable consumer receives -> ledger dedupes re
 -> self-origin guard skips own emit -> clean teardown.
 
 Usage: HJS_SMOKE_SERVERS=host:4222 python tests/smoke_live.py
-Requires a stream bound to hjs.smoke.> (drill uses stream 'forgejo' by default — owns it —
-point HJS_SMOKE_STREAM at a scratch stream in CI).
+Requires a stream bound to hjs.smoke.> (drill uses stream 'hjs_smoke_drill' by default,
+via HJS_SMOKE_STREAM; point it at a scratch stream in CI).
 """
 import asyncio
 import json
@@ -48,7 +48,7 @@ async def main() -> int:
         prompts.append(prompt)
 
     ledger = WakeLedger(Path("/tmp/hjs-smoke-claims.db"))
-    pipe = WakePipeline({SUBJECT: WakeRoute(name="drill", subject=SUBJECT)}, ["hjs.smoke.>"],
+    pipe = WakePipeline(["hjs.smoke.>"],
                         ledger, dispatch, PROFILE, GATEWAY_NONCE)
 
     bus = NatsBus(settings, PROFILE)

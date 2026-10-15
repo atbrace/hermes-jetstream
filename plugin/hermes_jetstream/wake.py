@@ -25,7 +25,6 @@ class _Bucket:
 
 @dataclass
 class WakePipeline:
-    routes_by_subject: Dict[str, Any]                 # subject -> WakeRoute (configured routes)
     subscribe_allowed: list
     ledger: Any                                       # WakeLedger
     dispatch: Callable[[Any, str], Any]               # (route, prompt) -> awaitable/None
