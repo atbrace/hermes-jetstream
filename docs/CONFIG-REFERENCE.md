@@ -16,7 +16,7 @@ All keys live under `plugins.entries.hermes-jetstream.settings` (platform config
 | `wake[].durable` | str | `jetstream-<name>` | Durable consumer **and** queue group name (NATS requires equality for queue subs). Same value across gateways = one shared queue group. |
 | `wake[].prompt` | str | `JetStream event on {subject}. Payload: {payload}` | Template; single-brace `{subject} {payload} {seq} {ts}` only, payload truncated. |
 | `wake[].max_payload_chars` | int | `2000` | Payload truncation into the prompt. |
-| `wake[].rate_per_min` | int | `10` | Token bucket; excess NAKs (delayed redelivery), never dropped. |
+| `wake[].rate_per_min` | int | `10` | Per-minute shed threshold (token bucket); excess is ACKED AND DROPPED (shed), like the coalesced path. |
 | `wake[].min_interval_s` | float | `0` | Coalescing: events closer than this are acked and dropped. |
 | `wake[].job` | str | `""` | Set to a cron job id/name → route becomes an EVENT JOB: fires the job via the same rail as `cronjob(action='run', prompt=…)` instead of waking a session. |
 | `wake[].profile` | str | `""` | Profile owning the job (event jobs only). |

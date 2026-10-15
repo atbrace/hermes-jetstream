@@ -7,7 +7,7 @@ NATS JetStream plugin for [Hermes Agent](https://hermes-agent.nousresearch.com) 
 ## What it does
 
 - **Watch in-session** — `jetstream_watch(subject, note)`: matching events inject into your live session as turns. No polling. TTL-bounded, allowlisted.
-- **Wake routes & event jobs** — config-declared `wake:` routes turn subjects into session wakes (template prompts, storm rails, idempotent at-least-once) or fire existing cron jobs (`job:` field) on the `cronjob(action='run')` rail.
+- **Wake routes & event jobs** — config-declared `wake:` routes turn subjects into session wakes (template prompts, storm rails that shed excess — acked and dropped — idempotent at-least-once) or fire existing cron jobs (`job:` field) on the `cronjob(action='run')` rail.
 - **Emit** — `nats_publish` from any session (allowlisted, secret-scanned, thin envelope), plus an opt-in lifecycle tap mirroring Hermes events onto `hermes.>` subjects.
 - **Replay** — `nats_fetch`: one server-held pull (≤300 s), never a poll loop.
 
