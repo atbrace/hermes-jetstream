@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import time
 import types
 import unittest
@@ -21,6 +22,73 @@ from hermes_jetstream.ledger import WakeLedger
 from hermes_jetstream.wake import WakePipeline
 from hermes_jetstream.config import Settings, WakeRoute
 from hermes_jetstream.hooks import pick_fields, _TAPS
+from hermes_jetstream.tools import _run_async, _on_bus_loop, BusLoopGone
+
+
+class BusLoopHop(unittest.TestCase):
+    """Gateway worker thread has no loop -> _run_async's asyncio.run makes a foreign
+    loop where bus-bound futures never resolve. _on_bus_loop must hop onto bus.loop."""
+
+    class _FakeBus:
+        """Fake live bus: real background loop, publish returns a future bound to it."""
+        connected = True
+
+        def __init__(self, loop):
+            self._loop = loop
+
+        @property
+        def loop(self):
+            return self._loop
+
+        async def publish(self, subject, body, headers=None):
+            fut = self._loop.create_future()  # bound to the BUS loop, like nats-py's ack future
+
+            def _resolve():
+                fut.set_result("ACK")
+            self._loop.call_later(0.05, _resolve)
+            return await fut
+
+    def setUp(self):
+        self.loop = asyncio.new_event_loop()
+        self.thread = threading.Thread(target=self.loop.run_forever, daemon=True)
+        self.thread.start()
+
+    def tearDown(self):
+        self.loop.call_soon_threadsafe(self.loop.stop)
+        self.thread.join(timeout=2)
+        self.loop.close()
+
+    def test_worker_thread_hops_and_completes_fast(self):
+        # The measured failure shape: no running loop in this thread -> asyncio.run
+        # in _run_async -> bus future lives on another loop -> 5.00s timeout.
+        bus = self._FakeBus(self.loop)
+        t0 = time.monotonic()
+        box = {}
+
+        def worker():  # gateway tool handler thread: no event loop
+            box["r"] = _run_async(_on_bus_loop(bus, lambda: bus.publish("x.y", b"p", None)))
+
+        th = threading.Thread(target=worker)
+        th.start()
+        th.join(timeout=5)
+        self.assertEqual(box.get("r"), "ACK")
+        self.assertLess(time.monotonic() - t0, 1.0, "cross-loop hop must not stall")
+
+    def test_same_loop_awaits_directly(self):
+        bus = self._FakeBus(self.loop)
+
+        async def drive():  # already on the bus loop -> no hop needed
+            return await _on_bus_loop(bus, lambda: bus.publish("x.y", b"p", None))
+
+        self.assertEqual(asyncio.run_coroutine_threadsafe(drive(), self.loop).result(5),
+                         "ACK")
+
+    def test_lost_loop_raises_for_ephemeral_fallback(self):
+        class Dead:
+            connected = True
+            loop = None
+        with self.assertRaises(BusLoopGone):
+            asyncio.run(_on_bus_loop(Dead(), lambda: None))
 
 
 class SubjectMatches(unittest.TestCase):
