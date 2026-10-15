@@ -2,13 +2,14 @@
 
 NATS JetStream plugin for [Hermes Agent](https://hermes-agent.nousresearch.com) — first-class event-bus integration, no core changes.
 
-**Status: pre-MVP.** Issue tracking: `hjs-` beads (this repo, `.beads/`). Research baseline: [`research/00-FINDINGS.md`](research/00-FINDINGS.md). North star: [`docs/V1-READINESS.md`](docs/V1-READINESS.md).
+**Status: release candidate.** Config reference: [`docs/CONFIG-REFERENCE.md`](docs/CONFIG-REFERENCE.md) · Examples: [`examples/`](examples/) · Gate doc: [`docs/V1-READINESS.md`](docs/V1-READINESS.md) · Changelog: [`CHANGELOG.md`](CHANGELOG.md).
 
-## What it will do
+## What it does
 
-- **Subscribe in-session** — agents watch JetStream subjects ad-hoc (`jetstream_subscribe` / `jetstream_fetch`); events wake or steer sessions instead of polling.
-- **Event jobs** — cron-style jobs triggered by subject match instead of a schedule, delivered through Hermes' existing job rails (cron delivery + `/cron` UI free).
-- **Emit** — `jetstream_publish` tool + a lifecycle hook tap that mirrors Hermes gateway/session/agent events onto a `hermes.>` subject stream.
+- **Watch in-session** — `jetstream_watch(subject, note)`: matching events inject into your live session as turns. No polling. TTL-bounded, allowlisted.
+- **Wake routes & event jobs** — config-declared `wake:` routes turn subjects into session wakes (template prompts, storm rails, idempotent at-least-once) or fire existing cron jobs (`job:` field) on the `cronjob(action='run')` rail.
+- **Emit** — `nats_publish` from any session (allowlisted, secret-scanned, thin envelope), plus an opt-in lifecycle tap mirroring Hermes events onto `hermes.>` subjects.
+- **Replay** — `nats_fetch`: one server-held pull (≤300 s), never a poll loop.
 
 ## Design stance
 
@@ -16,7 +17,18 @@ NATS JetStream plugin for [Hermes Agent](https://hermes-agent.nousresearch.com) 
 - Gateway-resident supervisor (`kind: platform` plugin), durable consumers, manual ack, idempotent wake ledgers — at-least-once, deduped.
 - Default-deny subject publish allowlist; loop breakers (no-self-wake) on by default.
 
-## Configuration (all under `plugins.entries.hermes-jetstream.settings`)
+## Quickstart
+
+```bash
+docker run -d -p 4222:4222 nats:2-alpine -js
+nats stream add hermes --subjects 'hermes.> ci.>' --storage file   # you own the stream; the plugin never creates one
+pip install "nats-py>=2.7,<3"                                       # + nkeys for nkey/creds auth
+```
+
+Enable the platform (`platforms.jetstream.enabled: true`), restart the gateway, then from any session:
+`jetstream_watch(subject="ci.>")` — now `nats pub ci.result.red '{"job":"api"}'` and watch the wake arrive.
+
+## Configuration (all under `plugins.entries.hermes-jetstream.settings`; full reference in [docs/CONFIG-REFERENCE.md](docs/CONFIG-REFERENCE.md))
 
 ```yaml
 servers: ["localhost:4222"]        # any nats-client-url
