@@ -24,7 +24,7 @@ config_schema:
   stream: { type: str, default: "hermes" }
   publish_allowed: { type: list, default: [] }
   subscribe_allowed: { type: list, default: [] }
-  wake: { type: dict, default: {} }
+  wake: { type: list, default: [] }
   auth: { type: dict, default: {} }
   tls: { type: dict, default: {} }
   max_payload_bytes: { type: int, default: 32768 }
