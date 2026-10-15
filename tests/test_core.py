@@ -451,6 +451,14 @@ class Config(unittest.TestCase):
         self.assertEqual(r.durable, "jetstream-a")
         with self.assertRaises(ValueError):
             WakeRoute.from_dict({"subject": "x.y"})
+        # wildcard subject -> wildcard default durable must fail at config load
+        with self.assertRaises(ValueError):
+            WakeRoute.from_dict({"name": "ci.*", "subject": "ci.*"})
+        with self.assertRaises(ValueError):
+            WakeRoute.from_dict({"name": "a", "subject": "x.y", "durable": "bad durable"})
+        self.assertEqual(
+            WakeRoute.from_dict({"name": "a", "subject": "x.y", "durable": "mine"}).durable,
+            "mine")
 
 
 if __name__ == "__main__":

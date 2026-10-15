@@ -62,9 +62,14 @@ class WakeRoute:
         subject = str(d.get("subject", "")).strip()
         if not subject:
             raise ValueError(f"wake route {name!r} requires a subject")
+        durable = str(d.get("durable") or f"jetstream-{name}")
+        # NATS rejects wildcards/whitespace in consumer names; fail at config load,
+        # not at connect where the error takes down every route on the platform.
+        if not durable or "*" in durable or ">" in durable or any(c.isspace() for c in durable):
+            raise ValueError(f"wake route {name!r}: durable {durable!r} must be a token (no '*', '>', whitespace)")
         return cls(
             name=name, subject=subject,
-            durable=str(d.get("durable") or f"jetstream-{name}"),
+            durable=durable,
             prompt=str(d.get("prompt") or cls.prompt),
             max_payload_chars=max(64, int(d.get("max_payload_chars", cls.max_payload_chars))),
             rate_per_min=max(1, int(d.get("rate_per_min", cls.rate_per_min))),
