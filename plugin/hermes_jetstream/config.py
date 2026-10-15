@@ -7,6 +7,7 @@ paths) live in .env expansion: any string value containing ``${VAR}`` is expande
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 from dataclasses import dataclass, field
@@ -21,9 +22,17 @@ DEFAULT_MAX_PAYLOAD = 32768  # client cap; server max_payload (1MiB default) sti
 
 
 def _expand(value: Any) -> Any:
-    """Expand ${VAR} in strings (secrets live in .env; config.yaml holds the reference)."""
+    """Expand ${VAR} in strings (secrets live in .env; config.yaml holds the reference).
+    A missing var expands empty (fail-open on value) but names itself in the log —
+    a typo'd credential otherwise surfaces as a generic auth refusal."""
     if isinstance(value, str):
-        return _ENV_RE.sub(lambda m: os.environ.get(m.group(1), ""), value)
+        def _sub(m):
+            name = m.group(1)
+            if name not in os.environ:
+                logging.getLogger("hermes_jetstream.config").warning(
+                    "[jetstream] config references ${%s} but it is not set — expanded empty", name)
+            return os.environ.get(name, "")
+        return _ENV_RE.sub(_sub, value)
     if isinstance(value, dict):
         return {k: _expand(v) for k, v in value.items()}
     if isinstance(value, list):
