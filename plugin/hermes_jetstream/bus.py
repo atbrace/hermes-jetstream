@@ -51,6 +51,11 @@ class NatsBus:
     def jetstream(self):
         return self._js
 
+    @property
+    def loop(self):
+        """The event loop this connection is bound to (for run_coroutine_threadsafe)."""
+        return getattr(self._nc, "_loop", None) if self.connected else None
+
     async def connect(self) -> None:
         if not HAVE_NATS:
             raise RuntimeError("nats-py is not installed; pip install 'nats-py>=2.7'")

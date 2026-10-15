@@ -18,6 +18,7 @@ from hermes_jetstream.envelope import (build_envelope, is_self_origin, render_pr
 from hermes_jetstream.ledger import WakeLedger
 from hermes_jetstream.wake import WakePipeline
 from hermes_jetstream.config import Settings, WakeRoute
+from hermes_jetstream.hooks import pick_fields, _TAPS
 
 
 class SubjectMatches(unittest.TestCase):
@@ -178,6 +179,21 @@ class WakePipelineGuards(unittest.TestCase):
 
 async def _boom():
     raise RuntimeError("dispatch down")
+
+
+class LifecycleTapPrivacy(unittest.TestCase):
+    def test_whitelist_projection(self):
+        out = pick_fields("session.start", {"platform": "tg", "session_key": "k",
+                                            "message": "SECRET BODY", "extra": 1})
+        self.assertEqual(out, {"platform": "tg", "session_key": "k"})
+
+    def test_unknown_kind_projects_empty(self):
+        self.assertEqual(pick_fields("nope", {"a": 1}), {})
+
+    def test_tap_kinds_project_no_bodies(self):
+        for kind, (_hook, fields) in _TAPS.items():
+            forbidden = {"message", "prompt", "text", "args", "command", "payload_raw", "response"}
+            self.assertFalse(forbidden & set(fields), f"{kind} whitelist leaks bodies")
 
 
 class Config(unittest.TestCase):

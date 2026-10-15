@@ -87,6 +87,8 @@ class Settings:
     max_payload_bytes: int = DEFAULT_MAX_PAYLOAD
     connect_timeout_s: float = 10.0
     reconnect_attempts: int = -1      # -1 = never give up (outage-tolerant)
+    lifecycle_emit: list = field(default_factory=list)   # empty = tap OFF; list kinds to enable
+    lifecycle_prefix: str = "hermes"
 
     @classmethod
     def from_plugin_ctx(cls, ctx) -> "Settings":
@@ -107,6 +109,8 @@ class Settings:
             subscribe_allowed=_subject_list(_expand(g("subscribe_allowed", []))),
             wake=[WakeRoute.from_dict(r) for r in (_expand(g("wake", [])) or []) if isinstance(r, dict)],
             max_payload_bytes=int(g("max_payload_bytes", DEFAULT_MAX_PAYLOAD) or DEFAULT_MAX_PAYLOAD),
+            lifecycle_emit=_subject_list(_expand(g("lifecycle_emit", []))),
+            lifecycle_prefix=str(g("lifecycle_prefix", "hermes")) or "hermes",
         )
 
     @classmethod

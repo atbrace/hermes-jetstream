@@ -45,6 +45,21 @@ def register(ctx) -> None:
     from .tools import register_tools
     register_tools(ctx)
 
+    from .hooks import register_hooks
+    from .adapter import active_buses
+    from .subject import SubjectPolicy
+
+    def _get_bus():
+        return next((b for b in active_buses() if b.connected), None)
+
+    if settings.lifecycle_emit:
+        if not SubjectPolicy([*settings.publish_allowed, f"{settings.lifecycle_prefix}.>"]).allows(
+                f"{settings.lifecycle_prefix}.session.start"):
+            logger.warning("[jetstream] lifecycle_emit enabled but publish prefix %s.> not in "
+                           "publish_allowed — tap DISABLED (fail closed)", settings.lifecycle_prefix)
+        else:
+            register_hooks(ctx, settings, _profile_label(), _get_bus)
+
     def _teardown():
         from .adapter import shutdown_active_adapters
         try:
@@ -53,3 +68,15 @@ def register(ctx) -> None:
             logger.debug("hermes-jetstream teardown noop", exc_info=True)
 
     ctx.on_unload(_teardown)
+
+
+def _profile_label() -> str:
+    import os
+    if os.environ.get("HERMES_PROFILE"):
+        return os.environ["HERMES_PROFILE"]
+    try:
+        from hermes_constants import get_hermes_home
+        name = get_hermes_home().name
+        return name if name and name != ".hermes" else "default"
+    except Exception:
+        return "default"

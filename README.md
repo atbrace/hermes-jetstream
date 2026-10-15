@@ -16,6 +16,31 @@ NATS JetStream plugin for [Hermes Agent](https://hermes-agent.nousresearch.com) 
 - Gateway-resident supervisor (`kind: platform` plugin), durable consumers, manual ack, idempotent wake ledgers — at-least-once, deduped.
 - Default-deny subject publish allowlist; loop breakers (no-self-wake) on by default.
 
+## Configuration (all under `plugins.entries.hermes-jetstream.settings`)
+
+```yaml
+servers: ["localhost:4222"]        # any nats-client-url
+stream: hermes                     # must bind your subject space
+publish_allowed: ["hermes.agent.>"]     # empty = publishing DENIED
+subscribe_allowed: ["ci.>", "hermes.>"] # gates wake routes AND nats_fetch
+wake:                                       # subject -> session wake routes
+  - name: ci-red
+    subject: ci.result.red
+    prompt: "CI went red: {payload}. Investigate."
+    rate_per_min: 5
+auth: { token: "${NATS_TOKEN}" }            # or creds/nkey/user; secrets stay in .env
+tls: { enabled: true, ca: /etc/ssl/nats-ca.pem }
+lifecycle_emit: [session.start, session.end, agent.turn.start]  # mirror to hermes.<kind>
+lifecycle_prefix: hermes
+```
+
+## Testing
+
+```bash
+python -m unittest tests.test_core        # stdlib-only, no network
+HJS_SMOKE_SERVERS=localhost:4222 python tests/smoke_live.py   # live drill, self-cleaning
+```
+
 ## JetStream model in one paragraph (why both pillars can coexist)
 
 JetStream layers durable **consumers** on plain NATS fan-out pub/sub. Publishing to a subject fans a copy to every matching subscription (nothing is "taken out"); durable consumers track their own ack progress over a retained log, and queue groups over one consumer give SQS-style competing-consumer dispatch when you want exactly-one delivery. Ack advances the consumer, it never deletes from the stream — deletion is stream retention policy (`limits` / `workqueue` / `interest`). So the same event can fan out to every watching session *and* be work-queued to a single event job.

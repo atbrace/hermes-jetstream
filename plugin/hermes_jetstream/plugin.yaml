@@ -25,3 +25,5 @@ config_schema:
   auth: { type: dict, default: {} }
   tls: { type: dict, default: {} }
   max_payload_bytes: { type: int, default: 32768 }
+  lifecycle_emit: { type: list, default: [] }
+  lifecycle_prefix: { type: str, default: "hermes" }
