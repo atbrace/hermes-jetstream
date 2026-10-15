@@ -115,7 +115,6 @@ class NatsBus:
                 ack_wait=120,           # wake dispatch is seconds; agent RUNS are fire-and-forget
                 max_ack_pending=100,    # consumer-side backpressure
                 backoff=[1.0, 5.0, 30.0, 120.0],
-                inactive_threshold=600,
             ),
         )
         self._subs.append(sub)
