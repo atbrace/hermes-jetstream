@@ -319,7 +319,7 @@ class WakeExtras(unittest.TestCase):
 
     def _pipe(self, dispatch, **route_kw):
         route = WakeRoute(name="hjs530", subject="ci.result", **route_kw)
-        pipe = WakePipeline({"ci.result": route}, ["ci.>"],
+        pipe = WakePipeline(["ci.>"],
                             WakeLedger(Path(tempfile.mkdtemp()) / "l.db"),
                             dispatch, "p", "N")
         return pipe, route
@@ -332,7 +332,7 @@ class WakeExtras(unittest.TestCase):
         import sqlite3
         db = Path(tempfile.mkdtemp()) / "l.db"
         route = WakeRoute(name="coop", subject="ci.result", min_interval_s=60)
-        pipe = WakePipeline({"ci.result": route}, ["ci.>"], WakeLedger(db),
+        pipe = WakePipeline(["ci.>"], WakeLedger(db),
                             lambda r, p: asyncio.sleep(0), "p", "N")
         m1 = FakeMsg(b'{"n": 1}', seq=1)
         m2 = FakeMsg(b'{"n": 2}', seq=2)
