@@ -3,10 +3,12 @@ stdlib unittest only — runs anywhere, no nats/gateway imports (LAN-hermetic ga
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 import tempfile
 import time
+import types
 import unittest
 from pathlib import Path
 
@@ -179,6 +181,64 @@ class WakePipelineGuards(unittest.TestCase):
 
 async def _boom():
     raise RuntimeError("dispatch down")
+
+
+class WatchRegistryLogic(unittest.TestCase):
+    def _reg(self, allowed=("ci.>",), max_watches=3):
+        from hermes_jetstream.watch import WatchRegistry
+        subs = []
+        injects = []
+
+        async def open_sub(subject, cb):
+            subs.append(subject)
+            return types.SimpleNamespace(cb=cb, unsubscribed=False)
+
+        async def close_sub(sub):
+            sub.unsubscribed = True
+
+        def inject(sid, text):
+            injects.append((sid, text))
+            return True
+        reg = WatchRegistry(policy=SubjectPolicy(list(allowed)), open_sub=open_sub,
+                            close_sub=close_sub, inject=inject, max_watches=max_watches)
+        return reg, subs, injects
+
+    def test_allowlist_enforced_at_creation(self):
+        reg, _, _ = self._reg()
+        self.assertIn("ERROR", asyncio.run(reg.add("secret.thing", "s1")))
+        self.assertIn("ERROR", asyncio.run(reg.add("", "s1")))
+        self.assertIn("ERROR", asyncio.run(reg.add("ci.x", "")))  # no session context
+
+    def test_watch_fire_injects_and_max_msgs_expires(self):
+        reg, subs, injects = self._reg()
+        out = asyncio.run(reg.add("ci.result.*", "sess-1", note="deploy gate", ttl_s=60, max_msgs=1))
+        self.assertIn("Watching", out)
+        w = reg._watches["w1"]
+        msg = types.SimpleNamespace(subject="ci.result.red",
+                                    data=json.dumps({"kind": "ci", "data": {"job": "r1"}}).encode())
+        asyncio.run(w.sub.cb(msg))
+        self.assertEqual(injects[0][0], "sess-1")
+        self.assertIn("ci.result.red", injects[0][1])
+        self.assertIn("deploy gate", injects[0][1])
+        self.assertTrue(w.expired)          # max_msgs hit
+        asyncio.run(reg.sweep())
+        self.assertEqual(reg.count(), 0)    # swept away
+
+    def test_ttl_expiry_sweep_and_cap(self):
+        reg, subs, _ = self._reg(max_watches=1)
+        asyncio.run(reg.add("ci.a", "s1", ttl_s=0.01))
+        time.sleep(0.02)
+        asyncio.run(reg.sweep())
+        self.assertEqual(reg.count(), 0)
+        self.assertEqual(len(subs), 1)      # sub opened
+        asyncio.run(reg.add("ci.a", "s1"))
+        self.assertIn("limit", asyncio.run(reg.add("ci.b", "s2")))
+
+    def test_unwatch_closes_sub(self):
+        reg, subs, _ = self._reg()
+        asyncio.run(reg.add("ci.x", "s1"))
+        self.assertIn("Unwatched", asyncio.run(reg.remove("w1")))
+        self.assertIn("ERROR", asyncio.run(reg.remove("w1")))
 
 
 class LifecycleTapPrivacy(unittest.TestCase):

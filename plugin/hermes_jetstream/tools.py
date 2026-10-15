@@ -51,6 +51,16 @@ class JetstreamTools:
         self.publish_policy = SubjectPolicy(settings.publish_allowed)
         self.fetch_policy = SubjectPolicy(settings.subscribe_allowed)
 
+    def _registry(self):
+        """In-session watches live in the gateway adapter; tools reach them via the
+        adapter registry. No adapter (CLI/cron process) = no watches: use nats_fetch."""
+        try:
+            from .adapter import active_watch_registries
+            regs = active_watch_registries()
+            return regs[0] if regs else None
+        except Exception:
+            return None
+
     # -- publish -----------------------------------------------------------
     async def nats_publish(self, subject: str, payload: Any, kind: str = "event", **_) -> str:
         subject = (subject or "").strip()
@@ -145,6 +155,24 @@ def _msg_id(body: bytes) -> str:
     return "hermes-" + hashlib.sha256(body).hexdigest()[:32]
 
 
+WATCH_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "subject": {"type": "string", "description": "Subject or wildcard pattern to watch (literal, *, or trailing >); must match subscribe_allowed."},
+        "note": {"type": "string", "description": "Short reminder attached to every injected wake (why you're watching)."},
+        "ttl_seconds": {"type": "number", "description": "Auto-expire seconds (default 3600, max 21600)."},
+        "max_msgs": {"type": "number", "description": "Stop after N injected events (0 = until TTL)."},
+    },
+    "required": ["subject"],
+}
+
+UNWATCH_SCHEMA = {
+    "type": "object",
+    "properties": {"watch_id": {"type": "string", "description": "Watch id from jetstream_watch."}},
+    "required": ["watch_id"],
+}
+
+
 def register_tools(ctx) -> None:
     holder: Dict[str, JetstreamTools] = {}
 
@@ -164,6 +192,43 @@ def register_tools(ctx) -> None:
         handler=lambda args, **kw: _run_async(_tools().nats_fetch(**args)),
         is_async=False, emoji="📡",
         description="Server-held pull of events from a NATS JetStream subject (bounded wait, allowlisted).")
+
+    def _watch(args, kw):
+        # dispatch binds session_id per call (model_tools._execute_tool).
+        reg = _tools()._registry()
+        if reg is None:
+            return "ERROR: no live gateway adapter — watches need the gateway process; use nats_fetch here."
+        sid = str(kw.get("session_id") or kw.get("task_id") or "")
+        return _run_async(reg.add(args.get("subject", ""), sid,
+                                   note=args.get("note", ""),
+                                   ttl_s=args.get("ttl_seconds"),
+                                   max_msgs=args.get("max_msgs", 0)))
+
+    def _unwatch(args, kw):
+        reg = _tools()._registry()
+        if reg is None:
+            return "ERROR: no live gateway adapter."
+        return _run_async(reg.remove(args.get("watch_id", "")))
+
+    def _list(args, kw):
+        reg = _tools()._registry()
+        return reg.list_lines() if reg is not None else "No live gateway adapter."
+
+    ctx.register_tool(
+        name="jetstream_watch", toolset="jetstream", schema=WATCH_SCHEMA,
+        handler=lambda args, **kw: _watch(args, kw),
+        is_async=False, emoji="👁",
+        description="Watch a NATS JetStream subject for this session: matching events are injected as turns (no polling). TTL-bounded.")
+    ctx.register_tool(
+        name="jetstream_unwatch", toolset="jetstream", schema=UNWATCH_SCHEMA,
+        handler=lambda args, **kw: _unwatch(args, kw),
+        is_async=False, emoji="👁",
+        description="Stop a jetstream_watch subscription by id.")
+    ctx.register_tool(
+        name="jetstream_list", toolset="jetstream", schema={"type": "object", "properties": {}},
+        handler=lambda args, **kw: _list(args, kw),
+        is_async=False, emoji="📡",
+        description="List active JetStream watches (id, subject, remaining TTL).")
 
 
 def _run_async(coro):

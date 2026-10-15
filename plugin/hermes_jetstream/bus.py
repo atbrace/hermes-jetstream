@@ -147,6 +147,11 @@ class NatsBus:
             except Exception:
                 pass
 
+    async def subscribe_ephemeral(self, subject: str, cb) -> Any:
+        """Live-only core subscription (no consumer state): in-session watches see events
+        published AFTER the watch opens, never history — nats_fetch is the replay tool."""
+        return await self._nc.subscribe(subject, cb=cb)
+
     async def stop(self) -> None:
         self._closing = True
         for sub in self._subs:

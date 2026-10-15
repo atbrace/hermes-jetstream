@@ -16,6 +16,9 @@ python_dependencies:
 provides_tools:
   - nats_publish
   - nats_fetch
+  - jetstream_watch
+  - jetstream_unwatch
+  - jetstream_list
 config_schema:
   servers: { type: list, default: ["localhost:4222"] }
   stream: { type: str, default: "hermes" }

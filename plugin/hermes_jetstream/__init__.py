@@ -45,6 +45,9 @@ def register(ctx) -> None:
     from .tools import register_tools
     register_tools(ctx)
 
+    from .adapter import set_plugin_ctx
+    set_plugin_ctx(ctx)
+
     from .hooks import register_hooks
     from .adapter import active_buses
     from .subject import SubjectPolicy
