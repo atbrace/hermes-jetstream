@@ -310,6 +310,89 @@ class WakePipelineGuards(unittest.TestCase):
         self.assertTrue(m3.acked)                         # ack AFTER dispatch accepted
 
 
+class WakeExtras(unittest.TestCase):
+    """hjs-530 coverage gaps: min_interval_s coalescing (acked-loss path explicit),
+    event-job route flow at the pipeline seam, and the FakeMsg shape audit."""
+
+    def run_async(self, coro):
+        return asyncio.run(coro)
+
+    def _pipe(self, dispatch, **route_kw):
+        route = WakeRoute(name="hjs530", subject="ci.result", **route_kw)
+        pipe = WakePipeline({"ci.result": route}, ["ci.>"],
+                            WakeLedger(Path(tempfile.mkdtemp()) / "l.db"),
+                            dispatch, "p", "N")
+        return pipe, route
+
+    def test_min_interval_coalesces_acked_and_recovers(self):
+        """min_interval_s=60: 1st dispatches, 2nd inside the window returns 'coalesced'
+        AND is ACKED (lossy by design — no ledger claim, so the event is gone), and a
+        redelivery of the SAME seq still acks coalesced (the coalesce skip runs before
+        claim). After the window the route dispatches again."""
+        import sqlite3
+        db = Path(tempfile.mkdtemp()) / "l.db"
+        route = WakeRoute(name="coop", subject="ci.result", min_interval_s=60)
+        pipe = WakePipeline({"ci.result": route}, ["ci.>"], WakeLedger(db),
+                            lambda r, p: asyncio.sleep(0), "p", "N")
+        m1 = FakeMsg(b'{"n": 1}', seq=1)
+        m2 = FakeMsg(b'{"n": 2}', seq=2)
+        m2b = FakeMsg(b'{"n": 2}', seq=2)          # redelivery of the coalesced seq
+        self.assertEqual(self.run_async(pipe.handle_message(m1, route)), "dispatched")
+        self.assertEqual(self.run_async(pipe.handle_message(m2, route)), "coalesced")
+        self.assertTrue(m2.acked and not m2.naked)  # coalesced = ack + drop, never naked
+        self.assertEqual(self.run_async(pipe.handle_message(m2b, route)), "coalesced")
+        with sqlite3.connect(db) as c:              # lossy proof: coalesced seq wrote NO claim row
+            rows = {r[0] for r in c.execute(
+                "SELECT dedupe_key FROM wake_claims").fetchall()}
+        self.assertTrue(any(k.endswith(":1") for k in rows))
+        self.assertFalse(any(k.endswith(":2") for k in rows))
+        # window expiry without sleeping 60s: rewind the interval clock
+        pipe._buckets[route.name].min_seen = time.time() - 61
+        m3 = FakeMsg(b'{"n": 3}', seq=3)
+        self.assertEqual(self.run_async(pipe.handle_message(m3, route)), "dispatched")
+
+    def test_event_job_route_roundtrip(self):
+        """from_dict round-trips job/profile (the event-job fields) and clamps junk."""
+        r = WakeRoute.from_dict({"name": "nightly", "subject": "ci.result",
+                                 "job": " rotate-db ", "profile": "homelab",
+                                 "min_interval_s": -5})
+        self.assertEqual(r.job, "rotate-db")
+        self.assertEqual(r.profile, "homelab")
+        self.assertEqual(r.durable, "jetstream-nightly")
+        self.assertEqual(r.min_interval_s, 0.0)     # negative clamped to 0
+        plain = WakeRoute.from_dict({"name": "a", "subject": "x.y"})
+        self.assertEqual((plain.job, plain.profile), ("", ""))
+
+    def test_event_job_route_pipeline_seam_is_dispatch_route_prompt(self):
+        """The wake-vs-job fork lives in the ADAPTER (_fire_event_job needs gateway
+        imports); the pipeline only calls dispatch(route, prompt). Prove a route with
+        .job set flows identically: dispatch receives that exact route object +
+        rendered prompt — the fork is the adapter's job, not the pipeline's."""
+        seen = []
+
+        def spy(r, p):
+            seen.append((r, p))
+            return asyncio.sleep(0)
+        pipe, route = self._pipe(spy, job="rotate-db", profile="homelab")
+        msg = FakeMsg(b'{"k": 1}', seq=5)
+        self.assertEqual(self.run_async(pipe.handle_message(msg, route)), "dispatched")
+        self.assertEqual(len(seen), 1)
+        self.assertIs(seen[0][0], route)            # the SAME route obj, .job intact
+        self.assertEqual(seen[0][0].job, "rotate-db")
+        self.assertIn("ci.result", seen[0][1])      # prompt rendered as for any wake
+        self.assertTrue(msg.acked)
+
+    def test_fake_msg_metadata_is_property_like_nats(self):
+        """Shape audit (hjs-530): FakeMsg.metadata must be a plain attribute read —
+        nats-py exposes it as a @property; any test/caller doing msg.metadata() would
+        crash the same way production would. Also assert the fields _msg_identity reads."""
+        m = FakeMsg(b"{}", seq=31, attempt=2)
+        md = m.metadata                             # no parens — property access
+        self.assertFalse(callable(md), "metadata must not be callable (nats-py property)")
+        self.assertEqual((md.stream, md.consumer, md.num_delivered), ("hermes", "c", 2))
+        self.assertEqual(md.sequence.stream, 31)
+
+
 async def _boom():
     raise RuntimeError("dispatch down")
 
