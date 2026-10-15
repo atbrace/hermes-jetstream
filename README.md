@@ -38,6 +38,16 @@ lifecycle_emit: [session.start, session.end, agent.turn.start]  # mirror to herm
 lifecycle_prefix: hermes
 ```
 
+## Multiplex-profile behavior
+
+One adapter per profile that enables the platform: each profile's `settings` (servers,
+allowlists, wake routes, auth) produce their own connection, and durable consumer names
+carry the profile's route names, so profiles never share a queue group. Two profiles
+pointing at the same `wake[].durable` on the same server intentionally form one queue
+group (shared dispatch) — that is NATS queue-group semantics, not an accident. Watches
+are per-gateway-process in-memory state; only the profile whose gateway loaded the
+platform serves them.
+
 ## Testing
 
 ```bash

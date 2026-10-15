@@ -1,0 +1,62 @@
+name: CI
+# Community-repo gate. Matrix auth jobs boot their own nats-server via tests/auth_matrix.py;
+# the live-smoke job uses the docker service. Forgejo instances without runners: run
+# scripts/ci.sh locally — it's the same gate.
+on:
+  push: { branches: [main] }
+  pull_request:
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "${{ matrix.python-version }}" }
+      - run: pip install nats-py>=2.7,<3 nkeys
+      - run: ./scripts/ci.sh
+
+  live-smoke:
+    runs-on: ubuntu-latest
+    services:
+      nats:
+        image: nats:2-alpine
+        options: --jetstream
+        ports: ["4222:4222"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install nats-py>=2.7,<3
+      - run: HJS_SMOKE_SERVERS=localhost:4222 python tests/smoke_live.py
+
+  auth-matrix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install nats-py>=2.7,<3 nkeys
+      - name: install nats-server
+        run: |
+          v=2.11.8
+          curl -sL "https://github.com/nats-io/nats-server/releases/download/v$v/nats-server-v$v-linux-amd64.tar.gz" | tar xz
+          echo "NATS_BIN=$(pwd)/nats-server-v$v-linux-amd64/nats-server" >> "$GITHUB_ENV"
+      - run: python tests/auth_matrix.py
+
+  cluster-drill:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install nats-py>=2.7,<3
+      - name: install nats-server
+        run: |
+          v=2.11.8
+          curl -sL "https://github.com/nats-io/nats-server/releases/download/v$v/nats-server-v$v-linux-amd64.tar.gz" | tar xz
+          echo "NATS_BIN=$(pwd)/nats-server-v$v-linux-amd64/nats-server" >> "$GITHUB_ENV"
+      - run: python tests/cluster_drill.py   # R=3 stream, node kill, durable consumer rebind

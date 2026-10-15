@@ -176,7 +176,45 @@ class WakePipelineGuards(unittest.TestCase):
         msg = FakeMsg(b"{}", seq=99)
         with self.assertRaises(RuntimeError):
             self.run_async(pipe.handle_message(msg, route))
-        self.assertFalse(msg.acked)  # -> redelivery with backoff
+
+    def test_burst_beyond_bucket_naks_not_drops(self):
+        """Storm gate: 10 msgs at rate 3/min -> exactly 3 dispatched; every excess
+        NAKed (delayed redelivery), nothing silently dropped or acked-away."""
+        route = WakeRoute(name="storm", subject="ci.result", rate_per_min=3)
+        pipe = WakePipeline({"ci.result": route}, ["ci.>"],
+                            WakeLedger(Path(tempfile.mkdtemp()) / "l.db"),
+                            lambda r, p: asyncio.sleep(0), "p", "N")
+        verdicts = [self.run_async(pipe.handle_message(FakeMsg(b"{}", seq=i), route))
+                    for i in range(1, 11)]
+        self.assertEqual(verdicts.count("dispatched"), 3)
+        self.assertEqual(verdicts.count("throttled"), 7)
+        self.assertTrue(all(v in ("dispatched", "throttled") for v in verdicts))
+
+    def test_ack_after_dispatch_crash_redelivers(self):
+        """Claim-then-ack: a dispatch crash leaves the msg unacked (server redelivers)
+        AND the ledger claim dead — after reclaim the same stream seq dispatches again.
+        A completed run never re-dispatches (covered by test_duplicate_skipped)."""
+        import time as _t
+        db = Path(tempfile.mkdtemp()) / "l.db"
+        ledger = WakeLedger(db)
+        route = WakeRoute(name="r", subject="ci.result")
+        pipe = lambda disp: WakePipeline({"ci.result": route}, ["ci.>"], ledger, disp, "p", "N")
+        msg = FakeMsg(b"{}", seq=7)
+        with self.assertRaises(RuntimeError):
+            self.run_async(pipe(lambda r, p: _boom()).handle_message(msg, route))
+        self.assertFalse(msg.acked)                       # redelivery will happen
+        m2 = FakeMsg(b"{}", seq=7)
+        self.assertEqual(self.run_async(pipe(lambda r, p: asyncio.sleep(0))
+                                         .handle_message(m2, route)), "skipped_duplicate")
+        # simulate owner death + reclaim window, then redelivery must dispatch
+        import sqlite3
+        with sqlite3.connect(db) as c:
+            c.execute("UPDATE wake_claims SET claimed_at=? WHERE 1", (_t.time() - 9999,))
+            c.commit()
+        m3 = FakeMsg(b"{}", seq=7)
+        self.assertEqual(self.run_async(pipe(lambda r, p: asyncio.sleep(0))
+                                        .handle_message(m3, route)), "dispatched")
+        self.assertTrue(m3.acked)                         # ack AFTER dispatch accepted
 
 
 async def _boom():
@@ -239,6 +277,31 @@ class WatchRegistryLogic(unittest.TestCase):
         asyncio.run(reg.add("ci.x", "s1"))
         self.assertIn("Unwatched", asyncio.run(reg.remove("w1")))
         self.assertIn("ERROR", asyncio.run(reg.remove("w1")))
+
+
+    def test_ensure_stream_never_creates(self):
+        """Generality law: the plugin owns NO stream provisioning. No plugin module may
+        call add_stream/delete_stream — only the drills (self-cleaning) do."""
+        pkg = Path(__file__).resolve().parents[1] / "plugin" / "hermes_jetstream"
+        for f in pkg.glob("*.py"):
+            self.assertNotIn("add_stream", f.read_text(), f"{f.name} must not create streams")
+            self.assertNotIn("delete_stream", f.read_text(), f"{f.name} must not delete streams")
+            self.assertNotIn("update_stream", f.read_text(), f"{f.name} must not mutate streams")
+
+
+class ConfigAudit(unittest.TestCase):
+    def test_no_plaintext_secret_defaults_in_manifest(self):
+        """Audit gate: every credential-shaped config key must default empty so secrets
+        can only arrive via ${VAR} -> .env, never baked into config.yaml or defaults."""
+        import re
+        text = (Path(__file__).resolve().parents[1] / "plugin" / "hermes_jetstream" /
+                "plugin.yaml").read_text()
+        for key in ("token", "password", "nkey", "creds", "tls"):
+            m = re.search(rf"^\s*{key}.*$", text, re.MULTILINE)
+            if m:
+                self.assertNotIn("default:", m.group(0).replace("default: {}", "")
+                                 .replace("default: []", ""),
+                                 f"{key} manifest line carries a default value")
 
 
 class LifecycleTapPrivacy(unittest.TestCase):
