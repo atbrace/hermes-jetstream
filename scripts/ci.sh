@@ -11,7 +11,7 @@ fail=0
 note() { printf '\n=== %s ===\n' "$1"; }
 
 note "unit tests (stdlib-only, LAN-hermetic)"
-"$PY" -m unittest tests.test_core 2>&1 | tail -3 || fail=1
+"$PY" -m unittest tests.test_core 2>&1 || fail=1
 
 note "generality gate (no environment references in plugin/)"
 if grep -rniE "consul|192\.168|initzero|forgejo|nomad|sysadmin|service\." plugin/; then
@@ -25,7 +25,7 @@ note "syntax"
 
 if command -v hermes >/dev/null 2>&1; then
   note "hermes plugins doctor"
-  hermes plugins doctor "$(pwd)/plugin/hermes_jetstream" 2>&1 | tail -3 || fail=1
+  hermes plugins doctor "$(pwd)/plugin/hermes_jetstream" 2>&1 || fail=1
 else
   note "hermes plugins doctor — skipped (hermes not on PATH)"
 fi
