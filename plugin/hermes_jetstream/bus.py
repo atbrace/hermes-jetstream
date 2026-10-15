@@ -1,0 +1,142 @@
+"""NATS connection supervisor: one connection, wake consumers as tasks, never raises into the loop.
+
+Every callback funnels through _safe() — an exception here must degrade to a log line, never
+propagate into the gateway event loop (a plugin crash takes the gateway's whole session roster).
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+from typing import Any, Callable, Coroutine, Dict, List, Optional, Tuple
+
+logger = logging.getLogger("hermes_jetstream.bus")
+
+try:
+    import nats
+    from nats.errors import Error as NatsError
+    from nats.js.errors import NotFoundError
+    HAVE_NATS = True
+except ImportError:
+    HAVE_NATS = False
+
+
+def _msg_meta(msg) -> Tuple[str, int, int]:
+    """(dedupe_key, stream_seq, delivery_attempt) — JetStream-only; core subs return ("",0,1)."""
+    try:
+        md = msg.metadata()
+        return (f"{md.stream}:{md.consumer}:{md.sequence.stream}",
+                md.sequence.stream, md.deliver_attempt)
+    except Exception:
+        return ("", 0, 1)
+
+
+class NatsBus:
+    def __init__(self, settings, profile_name: str,
+                 disconnected_cb: Optional[Callable[[], None]] = None,
+                 reconnected_cb: Optional[Callable[[], None]] = None):
+        self.settings = settings
+        self.profile_name = profile_name
+        self._nc = None
+        self._js = None
+        self._subs: List[Any] = []
+        self._closing = False
+        self._disconnected_cb = disconnected_cb
+        self._reconnected_cb = reconnected_cb
+
+    @property
+    def connected(self) -> bool:
+        return self._nc is not None and not self._nc.is_closed
+
+    @property
+    def jetstream(self):
+        return self._js
+
+    async def connect(self) -> None:
+        if not HAVE_NATS:
+            raise RuntimeError("nats-py is not installed; pip install 'nats-py>=2.7'")
+        kwargs: Dict[str, Any] = dict(
+            name=f"hermes-jetstream:{self.profile_name}",
+            allow_reconnect=True,
+            reconnect_time_wait=2,
+            max_reconnect_attempts=self.settings.reconnect_attempts,
+            connect_timeout=self.settings.connect_timeout_s,
+            no_echo=True,  # same-connection loop guard (cross-connection guard = nonce ledger)
+        )
+        kwargs.update(self.settings.auth_kwargs())
+        if self.settings.tls_enabled:
+            kwargs["tls"] = self.settings.tls_kwargs()["tls"]
+        if self._disconnected_cb:
+            kwargs["disconnected_cb"] = self._disconnected_cb
+        if self._reconnected_cb:
+            kwargs["reconnected_cb"] = self._reconnected_cb
+        self._nc = await nats.connect(self.settings.servers, **kwargs)
+        self._js = self._nc.jetstream()
+        logger.info("[jetstream] connected to %s (stream=%s)", self.settings.servers, self.settings.stream)
+
+    async def publish(self, subject: str, payload: bytes,
+                      headers: Optional[Dict[str, str]] = None) -> Any:
+        if self._js is None:
+            raise RuntimeError("jetstream not connected")
+        return await self._js.publish(subject, payload, timeout=5.0, headers=headers or None)
+
+    async def subscribe_wake(self, *, subject: str, queue: str,
+                             on_message: Callable[[Any], Coroutine]) -> None:
+        """Durable push consumer, manual ack: at-least-once with explicit ack discipline.
+        nats-py law: for a queue sub the QUEUE NAME is the durable consumer name (single
+        identity for deliver_group/durable/queue) — 'queue' below is that identity.
+        Server-side storm rails: max_deliver + backoff + max_ack_pending via ConsumerConfig."""
+        from nats.js.api import ConsumerConfig
+
+        async def _cb(msg) -> None:
+            try:
+                await on_message(msg)
+            except Exception:
+                logger.exception("[jetstream] wake callback failed (message redelivers)")
+
+        sub = await self._js.subscribe(
+            subject, queue=queue, cb=_cb, durable=queue, stream=self.settings.stream,
+            manual_ack=True,
+            config=ConsumerConfig(
+                max_deliver=5,          # server law: must exceed len(backoff)
+                ack_wait=120,           # wake dispatch is seconds; agent RUNS are fire-and-forget
+                max_ack_pending=100,    # consumer-side backpressure
+                backoff=[1.0, 5.0, 30.0, 120.0],
+                inactive_threshold=600,
+            ),
+        )
+        self._subs.append(sub)
+
+    async def fetch(self, subject: str, *, timeout: float = 30.0, batch: int = 1) -> List[Any]:
+        """Server-held pull (no polling loop): one fetch() call blocks in the server up to timeout.
+        Ephemeral pull consumer per call — no durable state, so a restart can't wedge it."""
+        if self._js is None:
+            raise RuntimeError("jetstream not connected")
+        from nats.errors import TimeoutError as NatsTimeoutError
+        psub = await self._js.pull_subscribe(subject, stream=self.settings.stream)
+        try:
+            return await psub.fetch(batch, timeout=timeout)
+        except NatsTimeoutError:
+            return []
+        finally:
+            try:
+                await psub.unsubscribe()
+            except Exception:
+                pass
+
+    async def stop(self) -> None:
+        self._closing = True
+        for sub in self._subs:
+            try:
+                await sub.drain()
+            except Exception:
+                try:
+                    await sub.unsubscribe()
+                except Exception:
+                    pass
+        self._subs.clear()
+        if self._nc is not None:
+            try:
+                await self._nc.close()
+            except Exception:
+                logger.debug("[jetstream] close error (ignored)", exc_info=True)
+        self._nc, self._js = None, None

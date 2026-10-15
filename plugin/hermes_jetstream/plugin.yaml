@@ -1,0 +1,26 @@
+name: hermes-jetstream
+version: 0.1.0
+kind: platform
+label: JetStream
+description: >
+  NATS JetStream event-bus integration: publish events from agent sessions,
+  wake sessions on subject matches via durable consumers, and mirror Hermes
+  lifecycle events onto a hermes.> subject stream. Works against any
+  nats-server with JetStream enabled — no infrastructure assumptions.
+author: atbrace
+license: MIT
+homepage: https://github.com/atbrace/hermes-jetstream
+requires_hermes: ">=0.21.4"
+python_dependencies:
+  - nats-py>=2.7
+provides_tools:
+  - nats_publish
+config_schema:
+  servers: { type: list, default: ["localhost:4222"] }
+  stream: { type: str, default: "hermes" }
+  publish_allowed: { type: list, default: [] }
+  subscribe_allowed: { type: list, default: [] }
+  wake: { type: dict, default: {} }
+  auth: { type: dict, default: {} }
+  tls: { type: dict, default: {} }
+  max_payload_bytes: { type: int, default: 32768 }
