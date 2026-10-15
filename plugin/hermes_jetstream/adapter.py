@@ -83,7 +83,6 @@ def _build_class():
                 logger.info("[jetstream] connected (publish-only: no wake routes configured)")
             self._bus = NatsBus(self.settings, self._profile_name)
             self._pipeline = WakePipeline(
-                routes_by_subject={r.subject: r for r in routes},
                 subscribe_allowed=self.settings.subscribe_allowed,
                 ledger=self._ledger, dispatch=self._dispatch,
                 profile_name=self._profile_name, nonce=GATEWAY_NONCE)

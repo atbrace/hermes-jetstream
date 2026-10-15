@@ -204,7 +204,7 @@ class WakePipelineGuards(unittest.TestCase):
     def _pipe(self, dispatch=None, nonce="NONCE1", profile="p"):
         route = WakeRoute(name="r1", subject="ci.result", rate_per_min=10)
         return WakePipeline(
-            routes_by_subject={"ci.result": route}, subscribe_allowed=["ci.>"],
+            subscribe_allowed=["ci.>"],
             ledger=WakeLedger(Path(tempfile.mkdtemp()) / "l.db"),
             dispatch=dispatch or (lambda r, p: asyncio.sleep(0)),
             profile_name=profile, nonce=nonce), route
@@ -236,7 +236,7 @@ class WakePipelineGuards(unittest.TestCase):
         import sqlite3
         db = Path(tempfile.mkdtemp()) / "l.db"
         route = WakeRoute(name="r", subject="ci.result")
-        pipe = WakePipeline({"ci.result": route}, ["ci.>"], WakeLedger(db),
+        pipe = WakePipeline(["ci.>"], WakeLedger(db),
                             lambda r, p: asyncio.sleep(0), "p", "N")
         m1 = FakeMsg(b'{"data": 1}', seq=77, attempt=1)
         self.assertEqual(self.run_async(pipe.handle_message(m1, route)), "dispatched")
@@ -252,7 +252,7 @@ class WakePipelineGuards(unittest.TestCase):
 
     def test_rate_throttle_sheds_acked(self):
         route = WakeRoute(name="burst", subject="ci.result", rate_per_min=1)
-        pipe = WakePipeline({"ci.result": route}, ["ci.>"],
+        pipe = WakePipeline(["ci.>"],
                             WakeLedger(Path(tempfile.mkdtemp()) / "l.db"),
                             lambda r, p: asyncio.sleep(0), "p", "N")
         msg1 = FakeMsg(b"{}", seq=1)
@@ -273,7 +273,7 @@ class WakePipelineGuards(unittest.TestCase):
         """Storm gate: 10 msgs at rate 3/min -> exactly 3 dispatched; every excess
         shed (acked + dropped, same as the coalesced path), nothing left naked."""
         route = WakeRoute(name="storm", subject="ci.result", rate_per_min=3)
-        pipe = WakePipeline({"ci.result": route}, ["ci.>"],
+        pipe = WakePipeline(["ci.>"],
                             WakeLedger(Path(tempfile.mkdtemp()) / "l.db"),
                             lambda r, p: asyncio.sleep(0), "p", "N")
         msgs = [FakeMsg(b"{}", seq=i) for i in range(1, 11)]
@@ -291,7 +291,7 @@ class WakePipelineGuards(unittest.TestCase):
         db = Path(tempfile.mkdtemp()) / "l.db"
         ledger = WakeLedger(db)
         route = WakeRoute(name="r", subject="ci.result")
-        pipe = lambda disp: WakePipeline({"ci.result": route}, ["ci.>"], ledger, disp, "p", "N")
+        pipe = lambda disp: WakePipeline(["ci.>"], ledger, disp, "p", "N")
         msg = FakeMsg(b"{}", seq=7)
         with self.assertRaises(RuntimeError):
             self.run_async(pipe(lambda r, p: _boom()).handle_message(msg, route))
