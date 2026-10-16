@@ -31,3 +31,23 @@ All keys live under `plugins.entries.hermes-jetstream.settings` (platform config
 | `lifecycle_emit` | list | `[]` | Mirror these lifecycle kinds to `<lifecycle_prefix>.<kind>`: `session.start`, `session.end`, `session.reset`, `agent.turn.start`, `subagent.stop`, `agent.stopped`. Requires the prefix in `publish_allowed` or the tap stays disabled. |
 | `lifecycle_prefix` | str | `hermes` | Subject prefix for lifecycle mirror events. |
 | `max_payload_bytes` | int | `32768` | Client-side emit cap (server `max_payload` also applies). |
+| `heartbeat_s` | int | `0` | Opt-in liveness heartbeat: publish a status snapshot every N seconds. `0` = off. Requires `heartbeat_subject`; disabled with a warning if the subject isn't publish-allowlisted (fail closed). |
+| `heartbeat_subject` | str | `""` | Subject for heartbeat publishes (e.g. `hermes.heartbeat`). Add it to `publish_allowed`. |
+
+## Watchability (no external monitoring required)
+
+Three plugin-owned surfaces answer "is my watch alive?" (see `docs/BATTLE-TEST.md` for
+why they exist):
+
+1. **`jetstream_status` tool** — per-route counters (`dispatched`/`shed`/`coalesced`/
+   `skipped_*`/`failed`), `attempted`, last-attempt and last-dispatch clocks, connection
+   state, active watches, and the last client error.
+2. **`gateway_state.json → platforms.jetstream.metrics`** — the same snapshot, mirrored
+   every 60 s for anything that reads files (dashboard, cron probe, your own collector).
+3. **Heartbeat events** — with `heartbeat_s` set, a status JSON lands on your subject
+   every interval; a plain `nats watch hermes.heartbeat` (or any consumer) is then a
+   complete dead-man: no message within 2× the interval means the platform is dead.
+
+Wire whatever dead-man you already run to whichever surface is cheapest for you. The
+plugin distinguishes idle from shed from broken; *alerting on it* stays your side, and
+the watchdog must be separate from the thing it watches.

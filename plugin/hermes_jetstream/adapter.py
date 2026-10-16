@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, Dict, Optional
 
 from .bus import NatsBus, HAVE_NATS
@@ -69,6 +70,8 @@ def _build_class():
             self._ledger = WakeLedger(_plugin_data_dir() / "wake-claims.db")
             self._profile_name = _profile_name()
             self._watches: Optional[WatchRegistry] = None
+            self._last_error: Optional[Dict[str, Any]] = None
+            self._hb_last: float = 0.0
 
         async def connect(self, *, is_reconnect: bool = False) -> bool:
             if self._bus is not None and self._bus.connected:
@@ -81,7 +84,16 @@ def _build_class():
                 logger.warning("[jetstream] %d wake route(s) outside subscribe_allowed — ignored", dropped)
             if not routes:
                 logger.info("[jetstream] connected (publish-only: no wake routes configured)")
-            self._bus = NatsBus(self.settings, self._profile_name)
+            hb = int(getattr(self.settings, "heartbeat_s", 0) or 0)
+            hsubj = str(getattr(self.settings, "heartbeat_subject", "") or "").strip()
+            if hb and not hsubj:
+                logger.warning("[jetstream] heartbeat_s set but heartbeat_subject empty — heartbeat DISABLED (fail closed)")
+                self.settings.heartbeat_s = 0
+            elif hb and not SubjectPolicy([*self.settings.publish_allowed, hsubj]).allows(hsubj):
+                logger.warning("[jetstream] heartbeat_subject %s not in publish_allowed — heartbeat DISABLED (fail closed)", hsubj)
+                self.settings.heartbeat_s = 0
+            self._last_error = None
+            self._bus = NatsBus(self.settings, self._profile_name, error_cb=self._note_error)
             self._pipeline = WakePipeline(
                 subscribe_allowed=self.settings.subscribe_allowed,
                 ledger=self._ledger, dispatch=self._dispatch,
@@ -103,11 +115,59 @@ def _build_class():
                 self._bus = None
                 return False
             self._mark_connected()
+            self._write_metrics()
             with _ACTIVE_LOCK:
                 _ACTIVE.add(self)
             return True
 
         _watch_keys: Dict[str, str] = {}
+
+        def _note_error(self, exc) -> None:
+            self._last_error = {"ts": time.time(), "msg": str(exc)[:200]}
+
+        def status(self) -> Dict[str, Any]:
+            """Watchability surface (hjs-htk): what a session/tool/monitor can ask without
+            a jsz client. Distinguishes idle from broken via per-route counters + clocks."""
+            hb = getattr(self.settings, "heartbeat_s", 0)
+            st = {
+                "connected": bool(self._bus and self._bus.connected),
+                "stream": self.settings.stream,
+                "servers": list(self.settings.servers),
+                "routes": self._pipeline.stats_snapshot() if self._pipeline else {},
+                "watches": len(self._watches._watches) if self._watches else 0,
+                "heartbeat_s": hb,
+            }
+            if self._last_error:
+                st["last_error"] = self._last_error
+            return st
+
+        def _write_metrics(self) -> None:
+            """Mirror status() into the gateway platform state so it survives without
+            the tool (dashboard, files, any external collector). Never raises."""
+            try:
+                self._write_runtime_status_safe("metrics", platform_metrics=self.status())
+            except Exception:
+                logger.debug("[jetstream] metrics write failed", exc_info=True)
+
+        async def _heartbeat(self) -> None:
+            hb = getattr(self.settings, "heartbeat_s", 0)
+            subject = str(getattr(self.settings, "heartbeat_subject", "") or "").strip()
+            if not hb or not subject or not (self._bus and self._bus.connected):
+                return
+            now = time.time()
+            if now - getattr(self, "_hb_last", 0) < hb:
+                return
+            self._hb_last = now
+            st = self.status()
+            st["kind"] = "hermes-jetstream.heartbeat"
+            st["profile"] = self._profile_name
+            st["ts"] = now
+            st.pop("servers", None)
+            try:
+                import json
+                await self._bus.publish(subject, json.dumps(st, default=str).encode())
+            except Exception:
+                logger.warning("[jetstream] heartbeat publish failed", exc_info=True)
 
         async def _sweep_loop(self) -> None:
             while True:
@@ -116,6 +176,8 @@ def _build_class():
                     if self._watches:
                         await self._watches.sweep()
                     self._ledger.prune()  # keep wake-claims.db bounded (7d done rows)
+                    self._write_metrics()
+                    await self._heartbeat()
                 except asyncio.CancelledError:
                     raise
                 except Exception:
@@ -266,6 +328,12 @@ def active_buses():
 def active_watch_registries():
     with _ACTIVE_LOCK:
         return [a._watches for a in _ACTIVE if getattr(a, "_watches", None) is not None]
+
+
+def active_status():
+    """Per-adapter watchability snapshots for this process (hjs-htk)."""
+    with _ACTIVE_LOCK:
+        return [a.status() for a in _ACTIVE]
 
 
 def build_adapter(platform_config, settings: Settings):

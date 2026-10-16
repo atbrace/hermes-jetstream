@@ -262,6 +262,24 @@ def register_tools(ctx) -> None:
         is_async=False, emoji="📡",
         description="List active JetStream watches (id, subject, remaining TTL).")
 
+    def _status(args, kw):
+        try:
+            from .adapter import active_status
+            snaps = active_status()
+        except Exception:
+            snaps = []
+        if not snaps:
+            return ("No live gateway adapter in this process (CLI/cron). The platform's "
+                    "status surface lives in the gateway; check gateway_state.json "
+                    "platforms.jetstream.metrics instead.")
+        return json.dumps(snaps, default=str, indent=1)
+
+    ctx.register_tool(
+        name="jetstream_status", toolset="jetstream", schema={"type": "object", "properties": {}},
+        handler=lambda args, **kw: _status(args, kw),
+        is_async=False, emoji="📡",
+        description="JetStream platform health: connection, per-route wake counters (dispatched/shed/coalesced/skipped), last-attempt/last-dispatch clocks, active watches, last error. Answers 'is my watch alive?' without external monitoring.")
+
 
 def _run_async(coro):
     """Tool handlers run sync; hop onto the running loop when inside one, else drive one."""

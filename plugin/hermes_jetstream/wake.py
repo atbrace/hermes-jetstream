@@ -31,6 +31,28 @@ class WakePipeline:
     profile_name: str
     nonce: str
     _buckets: Dict[str, _Bucket] = field(default_factory=dict)
+    # hjs-htk watchability: every verdict increments a counter and stamps the clock, so
+    # "nothing happened" and "working, nothing to do" and "shedding" are distinguishable
+    # from the plugin's own surfaces (measured gap: docs/BATTLE-TEST.md).
+    stats: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+
+    def _stat(self, route_name: str, verdict: str, now: float) -> None:
+        s = self.stats.setdefault(route_name, {"attempted": 0, "last_attempt_ts": 0.0,
+                                               "last_dispatch_ts": 0.0,
+                                               "dispatched": 0, "shed": 0, "coalesced": 0,
+                                               "skipped_self_origin": 0,
+                                               "skipped_not_allowed": 0,
+                                               "skipped_duplicate": 0, "failed": 0})
+        s["attempted"] += 1
+        s["last_attempt_ts"] = now
+        if verdict in ("dispatched", "shed", "coalesced", "skipped_self_origin",
+                       "skipped_not_allowed", "skipped_duplicate", "failed"):
+            s[verdict] += 1
+        if verdict == "dispatched":
+            s["last_dispatch_ts"] = now
+
+    def stats_snapshot(self) -> Dict[str, Any]:
+        return {name: dict(s) for name, s in self.stats.items()}
 
     def _rate_ok(self, route, now: float) -> bool:
         cap = float(route.rate_per_min)
@@ -52,7 +74,19 @@ class WakePipeline:
         return True
 
     async def handle_message(self, msg, route) -> str:
-        """Returns a verdict string (unit-test seam). Raises only to force redelivery."""
+        """Returns a verdict string (unit-test seam). Raises only to force redelivery.
+        Every verdict is counted (hjs-htk) before it is returned."""
+        try:
+            verdict = await self._handle(msg, route)
+        except Exception:
+            # dispatch failure forces redelivery; count it so an erroring route never
+            # reads as clean silence (a probe that errors must never look healthy)
+            self._stat(route.name, "failed", time.time())
+            raise
+        self._stat(route.name, verdict, time.time())
+        return verdict
+
+    async def _handle(self, msg, route) -> str:
         now = time.time()
         dedupe_key, seq, attempt = _msg_identity(msg)
         envelope = parse_envelope(getattr(msg, "data", b"") or b"")

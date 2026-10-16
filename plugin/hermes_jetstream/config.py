@@ -110,6 +110,8 @@ class Settings:
     reconnect_attempts: int = -1      # -1 = never give up (outage-tolerant)
     lifecycle_emit: list = field(default_factory=list)   # empty = tap OFF; list kinds to enable
     lifecycle_prefix: str = "hermes"
+    heartbeat_s: int = 0                    # 0 = heartbeat OFF (opt-in)
+    heartbeat_subject: str = ""             # required when heartbeat_s > 0; must be publish-allowlisted
 
     @classmethod
     def from_plugin_ctx(cls, ctx) -> "Settings":
@@ -132,6 +134,8 @@ class Settings:
             max_payload_bytes=int(g("max_payload_bytes", DEFAULT_MAX_PAYLOAD) or DEFAULT_MAX_PAYLOAD),
             lifecycle_emit=_subject_list(_expand(g("lifecycle_emit", []))),
             lifecycle_prefix=str(g("lifecycle_prefix", "hermes")) or "hermes",
+            heartbeat_s=max(0, int(g("heartbeat_s", 0) or 0)),
+            heartbeat_subject=str(_expand(g("heartbeat_subject", "")) or "").strip(),
         )
 
     @classmethod

@@ -23,7 +23,8 @@ except ImportError:
 class NatsBus:
     def __init__(self, settings, profile_name: str,
                  disconnected_cb: Optional[Callable[[], None]] = None,
-                 reconnected_cb: Optional[Callable[[], None]] = None):
+                 reconnected_cb: Optional[Callable[[], None]] = None,
+                 error_cb: Optional[Callable[[Any], None]] = None):
         self.settings = settings
         self.profile_name = profile_name
         self._nc = None
@@ -32,10 +33,15 @@ class NatsBus:
         self._closing = False
         self._disconnected_cb = disconnected_cb
         self._reconnected_cb = reconnected_cb
+        self._error_cb_user = error_cb
 
-    @staticmethod
-    async def _error_cb(exc) -> None:
+    async def _error_cb(self, exc) -> None:
         logger.warning("[jetstream] client error: %s", exc)
+        if self._error_cb_user is not None:
+            try:
+                self._error_cb_user(exc)
+            except Exception:
+                logger.debug("[jetstream] error_cb failed", exc_info=True)
 
     @property
     def connected(self) -> bool:

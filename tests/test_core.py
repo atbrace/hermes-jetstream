@@ -412,6 +412,53 @@ async def _boom():
     raise RuntimeError("dispatch down")
 
 
+class WatchabilityStats(unittest.TestCase):
+    """hjs-htk: every pipeline verdict is counted and clocked, so a session can ask
+    'is my watch alive?' from plugin-owned surfaces alone (docs/BATTLE-TEST.md)."""
+
+    def run_async(self, coro):
+        return asyncio.run(coro)
+
+    def _pipe(self, dispatch=None, rate=10):
+        route = WakeRoute(name="st", subject="ci.result", rate_per_min=rate)
+        pipe = WakePipeline(["ci.>"], WakeLedger(Path(tempfile.mkdtemp()) / "l.db"),
+                            dispatch or (lambda r, p: asyncio.sleep(0)), "p", "N")
+        return pipe, route
+
+    def test_dispatch_counted_and_clocked(self):
+        pipe, route = self._pipe()
+        self.run_async(pipe.handle_message(FakeMsg(b'{"data": 1}', seq=7), route))
+        s = pipe.stats_snapshot()["st"]
+        self.assertEqual((s["attempted"], s["dispatched"]), (1, 1))
+        self.assertGreater(s["last_attempt_ts"], 0)
+        self.assertGreaterEqual(s["last_dispatch_ts"], s["last_attempt_ts"] - 5)
+
+    def test_shed_and_duplicate_counted_separately(self):
+        pipe, route = self._pipe(rate=1)
+        self.run_async(pipe.handle_message(FakeMsg(b'{"a":1}', seq=1), route))
+        for i in range(3):
+            self.run_async(pipe.handle_message(FakeMsg(b'{"b":%d}' % i, seq=10 + i), route))
+        s = pipe.stats_snapshot()["st"]
+        self.assertEqual(s["attempted"], 4)
+        self.assertEqual(s["dispatched"], 1)
+        self.assertEqual(s["shed"], 3)
+
+    def test_dispatch_failure_counted_as_failed_and_still_raises(self):
+        async def boom(route, prompt):
+            raise RuntimeError("dispatch down")
+        pipe, route = self._pipe(dispatch=boom)
+        with self.assertRaises(RuntimeError):
+            self.run_async(pipe.handle_message(FakeMsg(b'{"x":1}', seq=2), route))
+        s = pipe.stats_snapshot()["st"]
+        self.assertEqual(s["failed"], 1)
+        self.assertEqual(s["dispatched"], 0)
+        self.assertGreater(s["last_attempt_ts"], 0)
+
+    def test_idle_route_has_no_stats_not_fake_zero_row(self):
+        pipe, _route = self._pipe()
+        self.assertEqual(pipe.stats_snapshot(), {})  # nothing attempted = no row, not a lie
+
+
 class WatchRegistryLogic(unittest.TestCase):
     def _reg(self, allowed=("ci.>",), max_watches=3, inject_ok=True):
         from hermes_jetstream.watch import WatchRegistry
