@@ -38,6 +38,7 @@ def register(ctx) -> None:
         check_fn=check_deps,
         ensure_deps_fn=None,  # nats-py is declared in plugin.yaml; operator installs
         validate_config=validate_config,
+        allowed_users_env="JETSTREAM_ALLOWED_USERS",  # platform-scoped allowlist; without it every wake falls to the global list (hjs-lll)
         emoji="📡",
         platform_hint="JetStream event bus available via nats_publish tool and configured wake routes.",
     )

@@ -34,6 +34,13 @@ All keys live under `plugins.entries.hermes-jetstream.settings` (platform config
 | `heartbeat_s` | int | `0` | Opt-in liveness heartbeat: publish a status snapshot every N seconds. `0` = off. Requires `heartbeat_subject`; disabled with a warning if the subject isn't publish-allowlisted (fail closed). |
 | `heartbeat_subject` | str | `""` | Subject for heartbeat publishes (e.g. `hermes.heartbeat`). Add it to `publish_allowed`. |
 
+## Auth
+
+Wake sessions are authorized through the standard gateway allowlist. Set
+`JETSTREAM_ALLOWED_USERS` (comma-separated, entries like `jetstream:<route-name>` or
+`*`) to allow wake routes for this platform without touching the global
+`GATEWAY_ALLOWED_USERS`. Route names you do not list stay default-deny.
+
 ## Watchability (no external monitoring required)
 
 Three plugin-owned surfaces answer "is my watch alive?" (see `docs/BATTLE-TEST.md` for
