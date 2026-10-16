@@ -1,15 +1,19 @@
 name: CI
-# Community-repo gate. Matrix auth jobs boot their own nats-server via tests/auth_matrix.py;
-# the live-smoke job uses the docker service. Forgejo instances without runners: run
-# scripts/ci.sh locally — it's the same gate.
+# Community-repo gate. Forgejo Actions: runs-on targets the estate CI lane (`pool-runner`).
+# This instance registers no ubuntu-latest runner — jobs asking for it queue forever —
+# so a fork moving to GitHub-hosted flips every runs-on back to ubuntu-latest, one line each.
+# The live job boots its own nats-server binary (no docker service container), then runs
+# smoke + auth matrix + cluster drill as one sequence on it.
+# Forgejo instances without runners: run scripts/ci.sh locally — it's the same hermetic gate.
 on:
   push: { branches: [main] }
   pull_request:
 
 jobs:
   core:
-    runs-on: ubuntu-latest
+    runs-on: pool-runner
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
@@ -19,22 +23,8 @@ jobs:
       - run: pip install nats-py>=2.7,<3 nkeys
       - run: ./scripts/ci.sh
 
-  live-smoke:
-    runs-on: ubuntu-latest
-    services:
-      nats:
-        image: nats:2-alpine
-        options: --jetstream
-        ports: ["4222:4222"]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
-      - run: pip install nats-py>=2.7,<3
-      - run: HJS_SMOKE_SERVERS=localhost:4222 python tests/smoke_live.py
-
-  auth-matrix:
-    runs-on: ubuntu-latest
+  live:
+    runs-on: pool-runner
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -45,18 +35,19 @@ jobs:
           v=2.11.8
           curl -sL "https://github.com/nats-io/nats-server/releases/download/v$v/nats-server-v$v-linux-amd64.tar.gz" | tar xz
           echo "NATS_BIN=$(pwd)/nats-server-v$v-linux-amd64/nats-server" >> "$GITHUB_ENV"
-      - run: python tests/auth_matrix.py
-
-  cluster-drill:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
-      - run: pip install nats-py>=2.7,<3
-      - name: install nats-server
+      - name: nats-server present
+        run: test -x "$NATS_BIN" && "$NATS_BIN" --version
+      - name: boot scratch nats-server (JetStream)
         run: |
-          v=2.11.8
-          curl -sL "https://github.com/nats-io/nats-server/releases/download/v$v/nats-server-v$v-linux-amd64.tar.gz" | tar xz
-          echo "NATS_BIN=$(pwd)/nats-server-v$v-linux-amd64/nats-server" >> "$GITHUB_ENV"
-      - run: python tests/cluster_drill.py   # R=3 stream, node kill, durable consumer rebind
+          "$NATS_BIN" -js -p 4222 &
+          echo $! > nats.pid
+          sleep 2
+      - name: live smoke drill (wake/dedupe/self-origin)
+        run: HJS_SMOKE_SERVERS=localhost:4222 python tests/smoke_live.py
+      - name: auth matrix (7 modes + negative refusals)
+        run: python tests/auth_matrix.py
+      - name: cluster drill (R=3, node kill, durable rebind)
+        run: python tests/cluster_drill.py
+      - name: stop scratch nats-server
+        if: always()
+        run: kill "$(cat nats.pid)" 2>/dev/null || true
