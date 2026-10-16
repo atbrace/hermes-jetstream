@@ -1,18 +1,26 @@
 # Changelog
 
-## 0.10.0 — watchability surface (2026-10-16)
+## 0.10.0 — watchability surface + first live-campaign fixes (2026-10-16)
 
-Found and closed by live dogfood on a production bus (hjs-9lm → docs/BATTLE-TEST.md):
-every pipeline verdict is now counted per route — including `failed` on dispatch
-exceptions, so an erroring route never reads as clean silence. The snapshot is exposed
-three ways: `jetstream_status` tool (sessions), `platforms.jetstream.metrics` in
-`gateway_state.json` (files/dashboard), and an opt-in heartbeat publish
-(`heartbeat_s` + `heartbeat_subject`, fail-closed on the publish allowlist) so a plain
-`nats watch` is a complete dead-man. No external monitoring required — the plugin's
-job is to be watchable; alerting stays the operator's.
+Watchability (hjs-htk): every pipeline verdict is now counted per route —
+including `failed` on dispatch exceptions, so an erroring route never reads as clean
+silence. The snapshot is exposed three ways: `jetstream_status` tool (sessions),
+`platforms.jetstream.metrics` in `gateway_state.json` (files/dashboard), and an
+opt-in heartbeat publish (`heartbeat_s` + `heartbeat_subject`, fail-closed on the
+publish allowlist) so a plain `nats watch` is a complete dead-man. No external
+monitoring required — the plugin's job is to be watchable; alerting stays the
+operator's.
+
+Found and fixed by the same day's live campaign on a production bus
+(docs/BATTLE-TEST.md): `bus.loop` was always None (nats-py stores no `_loop`),
+which had silently disabled the lifecycle tap and forced every tool call onto the
+ephemeral connect path; wake sessions now authorize per-platform via
+`JETSTREAM_ALLOWED_USERS` instead of default-denying to the global allowlist;
+mis-guessed tool kwargs return a hint instead of a raw TypeError.
 
 Also: silence drill (`tests/silence_drill.py`) wired into `scripts/ci.sh`; poison
-exhaustion now provably loses wakes with no record (hjs-xq5 open).
+exhaustion now provably loses wakes with no record (open). Fetch re-reads acked
+messages under replay-all (open): use distinct subjects per fetch cycle until fixed.
 
 ## 0.9.0 — first community release candidate (2026-10-15)
 
