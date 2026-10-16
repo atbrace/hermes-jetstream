@@ -214,14 +214,24 @@ def register_tools(ctx) -> None:
             holder["t"] = JetstreamTools(Settings.from_plugin_ctx(ctx), ctx)
         return holder["t"]
 
+    def _bound(coro_factory):
+        """Model-facing handler wrapper: a mis-guessed kwarg returns a schema hint,
+        not a raw TypeError traceback (hjs-fso: agents guess data= for payload=)."""
+        def _h(args, **kw):
+            try:
+                return _run_async(coro_factory(args))
+            except TypeError as exc:
+                return f"ERROR: bad tool arguments: {exc}"
+        return _h
+
     ctx.register_tool(
         name="nats_publish", toolset="jetstream", schema=PUBLISH_SCHEMA,
-        handler=lambda args, **kw: _run_async(_tools().nats_publish(**args)),
+        handler=_bound(lambda a: _tools().nats_publish(**a)),
         is_async=False, emoji="📡",
         description="Publish a JSON event to a NATS JetStream subject (allowlisted).")
     ctx.register_tool(
         name="nats_fetch", toolset="jetstream", schema=FETCH_SCHEMA,
-        handler=lambda args, **kw: _run_async(_tools().nats_fetch(**args)),
+        handler=_bound(lambda a: _tools().nats_fetch(**a)),
         is_async=False, emoji="📡",
         description="Server-held pull of events from a NATS JetStream subject (bounded wait, allowlisted).")
 
