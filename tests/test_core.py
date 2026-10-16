@@ -459,6 +459,42 @@ class WatchabilityStats(unittest.TestCase):
         self.assertEqual(pipe.stats_snapshot(), {})  # nothing attempted = no row, not a lie
 
 
+class BusLoopCapture(unittest.TestCase):
+    """hjs-c81 dogfood: nats-py stores no _loop on the client, so a property that
+    reads _nc._loop is ALWAYS None — which silently killed the lifecycle tap and
+    forced tools onto the ephemeral path. bus.loop must be the loop that ran connect()."""
+
+    def run_async(self, coro):
+        return asyncio.run(coro)
+
+    class _FakeNC:
+        def __init__(self): self.is_closed = False
+        async def connect(self, *a, **k): pass
+        def jetstream(self): return object()
+        async def close(self, **k): self.is_closed = True
+
+    class _FakeNats:
+        def NATS(self): return BusLoopCapture._FakeNC()
+
+    def test_loop_is_connect_loop_not_none(self):
+        from hermes_jetstream import bus as bus_mod
+        from hermes_jetstream.bus import NatsBus
+        from hermes_jetstream.config import Settings
+        saved = bus_mod.nats
+        bus_mod.nats = self._FakeNats()
+        try:
+            async def t():
+                b = NatsBus(Settings(servers=["nats://x"], stream="s"), "p")
+                await b.connect()
+                import asyncio as a
+                self.assertIs(b.loop, a.get_running_loop())   # the old getattr path: None
+                await b.stop()
+                self.assertIsNone(b.loop)
+            self.run_async(t())
+        finally:
+            bus_mod.nats = saved
+
+
 class WatchRegistryLogic(unittest.TestCase):
     def _reg(self, allowed=("ci.>",), max_watches=3, inject_ok=True):
         from hermes_jetstream.watch import WatchRegistry
