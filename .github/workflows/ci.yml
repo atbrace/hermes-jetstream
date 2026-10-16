@@ -11,25 +11,20 @@ on:
 
 jobs:
   core:
+    # One lane on purpose: the runner container is Debian bookworm with a single
+    # system python3 (3.11), and setup-python can't fetch its versions manifest from
+    # inside the lane. A GitHub-hosted fork restores the matrix + setup-python here.
     runs-on: pool-runner
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: "${{ matrix.python-version }}" }
-      - run: pip install nats-py>=2.7,<3 nkeys
+      - run: python3 -m pip install --user 'nats-py>=2.7,<3' nkeys
       - run: ./scripts/ci.sh
 
   live:
     runs-on: pool-runner
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
-      - run: pip install nats-py>=2.7,<3 nkeys
+      - run: python3 -m pip install --user 'nats-py>=2.7,<3' nkeys
       - name: install nats-server
         run: |
           v=2.11.8

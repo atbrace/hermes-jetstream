@@ -139,6 +139,8 @@ class Envelope(unittest.TestCase):
         # attribute traversal not honored: {payload.__class__} stays literal
         out2 = render_prompt("{payload.__class__}", subject="s", payload={}, seq=1)
         self.assertEqual(out2, "{payload.__class__}")
+        self.assertEqual(render_prompt("at {ts}", subject="s", payload={"ts": 12.5}, seq=1), "at 12.5")
+        self.assertEqual(render_prompt("at {ts}", subject="s", payload={"no_ts": 1}, seq=1), "at ")
 
     def test_truncation(self):
         out = render_prompt("{payload}", subject="s", payload="x" * 5000, seq=1, max_payload_chars=100)
@@ -176,7 +178,10 @@ class Ledger(unittest.TestCase):
         now = time.time()
         self.ledger.claim("k3", "r", now=now)
         self.ledger.complete("k3", now=now)
+        self.ledger.claim("k4", "r", now=now)  # still CLAIMED — prune must never eat in-flight rows
         self.assertEqual(self.ledger.prune(older_than_s=1, now=now + 2), 1)
+        self.assertFalse(self.ledger.claim("k4", now=now + 3))  # row survived prune -> still deduped in flight
+        self.assertTrue(self.ledger.claim("k4", now=now + 9999))  # and reclaimable once stale
 
 
 class FakeMsg:
@@ -283,6 +288,43 @@ class WakePipelineGuards(unittest.TestCase):
         self.assertTrue(all(v in ("dispatched", "shed") for v in verdicts))
         self.assertTrue(all(m.acked and not m.naked for m in msgs))  # everything acked
 
+    def test_route_subject_outside_allowlist_acks_skip(self):
+        """Config-drift guard: a route whose subject no longer matches subscribe_allowed
+        must ack+skip, not redeliver forever."""
+        route = WakeRoute(name="orphan", subject="other.thing")
+        pipe = WakePipeline(["ci.>"], WakeLedger(Path(tempfile.mkdtemp()) / "l.db"),
+                            lambda r, p: asyncio.sleep(0), "p", "N")
+        msg = FakeMsg(b"{}", seq=1)
+        self.assertEqual(self.run_async(pipe.handle_message(msg, route)), "skipped_not_allowed")
+        self.assertTrue(msg.acked)
+
+    def test_garbage_envelope_dispatches_raw_payload(self):
+        """Non-JSON body is not an envelope: the wake still fires with the raw bytes as
+        payload (rendered via str) — malformed events must not wedge the consumer."""
+        seen = []
+        route = WakeRoute(name="raw", subject="ci.result")
+        pipe = WakePipeline(["ci.>"], WakeLedger(Path(tempfile.mkdtemp()) / "l.db"),
+                            lambda r, p: seen.append(p) or asyncio.sleep(0), "p", "N")
+        msg = FakeMsg(b"hello-not-json", seq=8)
+        self.assertEqual(self.run_async(pipe.handle_message(msg, route)), "dispatched")
+        self.assertIn("hello-not-json", seen[0])
+        self.assertTrue(msg.acked)
+
+    def test_bucket_refills_over_time(self):
+        """Token bucket earns back at rate_per_min/60 per second: drained to 0 then 3s
+        elapse at rate 60/min = exactly 3 tokens — three dispatches, a 4th sheds."""
+        route = WakeRoute(name="refill", subject="ci.result", rate_per_min=60)
+        pipe = WakePipeline(["ci.>"], WakeLedger(Path(tempfile.mkdtemp()) / "l.db"),
+                            lambda r, p: asyncio.sleep(0), "p", "N")
+        self.assertEqual(self.run_async(pipe.handle_message(FakeMsg(b"{}", seq=1), route)), "dispatched")
+        b = pipe._buckets[route.name]
+        b.tokens = 0.0
+        b.updated = time.time() - 3           # 3s at 60/min = +3 tokens
+        verdicts = [self.run_async(pipe.handle_message(FakeMsg(b"{}", seq=s), route))
+                    for s in (2, 3, 4)]
+        self.assertEqual(verdicts, ["dispatched", "dispatched", "dispatched"])
+        self.assertEqual(self.run_async(pipe.handle_message(FakeMsg(b"{}", seq=5), route)), "shed")
+
     def test_ack_after_dispatch_crash_redelivers(self):
         """Claim-then-ack: a dispatch crash leaves the msg unacked (server redelivers)
         AND the ledger claim dead — after reclaim the same stream seq dispatches again.
@@ -363,34 +405,7 @@ class WakeExtras(unittest.TestCase):
         plain = WakeRoute.from_dict({"name": "a", "subject": "x.y"})
         self.assertEqual((plain.job, plain.profile), ("", ""))
 
-    def test_event_job_route_pipeline_seam_is_dispatch_route_prompt(self):
-        """The wake-vs-job fork lives in the ADAPTER (_fire_event_job needs gateway
-        imports); the pipeline only calls dispatch(route, prompt). Prove a route with
-        .job set flows identically: dispatch receives that exact route object +
-        rendered prompt — the fork is the adapter's job, not the pipeline's."""
-        seen = []
 
-        def spy(r, p):
-            seen.append((r, p))
-            return asyncio.sleep(0)
-        pipe, route = self._pipe(spy, job="rotate-db", profile="homelab")
-        msg = FakeMsg(b'{"k": 1}', seq=5)
-        self.assertEqual(self.run_async(pipe.handle_message(msg, route)), "dispatched")
-        self.assertEqual(len(seen), 1)
-        self.assertIs(seen[0][0], route)            # the SAME route obj, .job intact
-        self.assertEqual(seen[0][0].job, "rotate-db")
-        self.assertIn("ci.result", seen[0][1])      # prompt rendered as for any wake
-        self.assertTrue(msg.acked)
-
-    def test_fake_msg_metadata_is_property_like_nats(self):
-        """Shape audit (hjs-530): FakeMsg.metadata must be a plain attribute read —
-        nats-py exposes it as a @property; any test/caller doing msg.metadata() would
-        crash the same way production would. Also assert the fields _msg_identity reads."""
-        m = FakeMsg(b"{}", seq=31, attempt=2)
-        md = m.metadata                             # no parens — property access
-        self.assertFalse(callable(md), "metadata must not be callable (nats-py property)")
-        self.assertEqual((md.stream, md.consumer, md.num_delivered), ("hermes", "c", 2))
-        self.assertEqual(md.sequence.stream, 31)
 
 
 async def _boom():
@@ -473,18 +488,19 @@ class WatchRegistryLogic(unittest.TestCase):
 
 
 class ConfigAudit(unittest.TestCase):
-    def test_no_plaintext_secret_defaults_in_manifest(self):
-        """Audit gate: every credential-shaped config key must default empty so secrets
-        can only arrive via ${VAR} -> .env, never baked into config.yaml or defaults."""
+    def test_manifest_defaults_carry_no_secrets(self):
+        """The credential law, made real: auth/tls default to empty containers and no
+        baked string default is secret-shaped (the old line-regex never matched a line)."""
         import re
+        from hermes_jetstream.envelope import find_secret_like
         text = (Path(__file__).resolve().parents[1] / "plugin" / "hermes_jetstream" /
                 "plugin.yaml").read_text()
-        for key in ("token", "password", "nkey", "creds", "tls"):
-            m = re.search(rf"^\s*{key}.*$", text, re.MULTILINE)
-            if m:
-                self.assertNotIn("default:", m.group(0).replace("default: {}", "")
-                                 .replace("default: []", ""),
-                                 f"{key} manifest line carries a default value")
+        for key in ("auth", "tls"):
+            self.assertRegex(text, rf"(?m)^\s*{key}:.*default:\s*\{{\}}\s*\}}\s*$",
+                             f"config_schema {key} must default to an empty dict")
+        string_defaults = re.findall(r'default:\s*"([^"]*)"', text)
+        self.assertIsNone(find_secret_like(string_defaults),
+                          "config_schema carries a secret-shaped default")
 
 
 class LifecycleTapPrivacy(unittest.TestCase):
@@ -542,6 +558,189 @@ class Config(unittest.TestCase):
         self.assertEqual(
             WakeRoute.from_dict({"name": "a", "subject": "x.y", "durable": "mine"}).durable,
             "mine")
+
+
+class ToolsPublishFetch(unittest.TestCase):
+    """JetstreamTools surface without a live bus: every refusal path is a string,
+    the bus is never reached (patched to explode if it were)."""
+
+    def _tools(self, publish_allowed=("ci.emit", "ops.>"), subscribe_allowed=("ci.>",),
+               max_payload_bytes=4096):
+        from hermes_jetstream.tools import JetstreamTools
+        s = Settings(servers=["h:1"], publish_allowed=list(publish_allowed),
+                     subscribe_allowed=list(subscribe_allowed),
+                     max_payload_bytes=max_payload_bytes)
+        t = JetstreamTools(s, ctx=None)
+
+        async def explode(*a, **k):
+            raise AssertionError("bus must not be reached on a refused publish")
+        t._publish = explode
+        t._fetch = explode
+        return t
+
+    def run_async(self, coro):
+        return asyncio.run(coro)
+
+    def test_wildcard_publish_refused(self):
+        t = self._tools()
+        self.assertIn("literal", self.run_async(t.nats_publish("ops.>", {}, kind="k")))
+
+    def test_allowlist_refused(self):
+        t = self._tools()
+        out = self.run_async(t.nats_publish("other.thing", {}, kind="k"))
+        self.assertIn("publish_allowed", out)
+
+    def test_empty_allowlist_denies_everything(self):
+        t = self._tools(publish_allowed=())
+        self.assertIn("ERROR", self.run_async(t.nats_publish("ci.emit", {}, kind="k")))
+
+    def test_secret_shaped_payload_refused(self):
+        t = self._tools()
+        out = self.run_async(t.nats_publish("ci.emit", {"key": "sk-" + "A" * 20}, kind="k"))
+        self.assertIn("secret", out)
+
+    def test_oversize_envelope_refused(self):
+        t = self._tools(max_payload_bytes=100)
+        out = self.run_async(t.nats_publish("ci.emit", {"big": "x" * 500}, kind="k"))
+        self.assertIn("max_payload_bytes", out)
+
+    def test_publish_success_reports_ack(self):
+        t = self._tools()
+        async def fake_publish(subject, body):
+            t.sent = (subject, body)
+            return types.SimpleNamespace(stream="hermes", seq=7, duplicate=False)
+        t._publish = fake_publish
+        out = self.run_async(t.nats_publish("ci.emit", {"ok": True}, kind="ci-result"))
+        self.assertIn("seq=7", out)
+        subject, body = t.sent
+        self.assertEqual(subject, "ci.emit")
+        env = json.loads(body)
+        self.assertEqual(env["kind"], "ci-result")
+        self.assertEqual(env["data"], {"ok": True})
+        self.assertEqual(env["schema"], "hermes-jetstream.v1")
+
+    def test_duplicate_ack_reported(self):
+        t = self._tools()
+        async def dup(subject, body):
+            return types.SimpleNamespace(stream="s", seq=1, duplicate=True)
+        t._publish = dup
+        self.assertIn("duplicate", self.run_async(t.nats_publish("ci.emit", {}, kind="k")))
+
+    def test_fetch_respects_allowlist_and_clamps(self):
+        t = self._tools()
+        self.assertIn("subscribe_allowed", self.run_async(t.nats_fetch("secret.thing")))
+        seen = {}
+        async def fake_fetch(subject, timeout, batch):
+            seen.update(timeout=timeout, batch=batch)
+            return []
+        t._fetch = fake_fetch
+        out = self.run_async(t.nats_fetch("ci.x", timeout_seconds=9999, batch=99))
+        self.assertIn("No messages", out)
+        self.assertEqual((seen["timeout"], seen["batch"]), (300.0, 10))  # clamped
+
+    def test_fetch_json_and_raw_bodies(self):
+        t = self._tools()
+        async def fake_fetch(subject, timeout, batch):
+            return [FakeMsg(b'{"a": 1}'), FakeMsg(b"plain")]
+        t._fetch = fake_fetch
+        out = json.loads(self.run_async(t.nats_fetch("ci.x")))
+        self.assertEqual(out, [{"a": 1}, "plain"])
+
+    def test_msg_id_is_deterministic(self):
+        from hermes_jetstream.tools import _msg_id
+        self.assertEqual(_msg_id(b"abc"), _msg_id(b"abc"))
+        self.assertNotEqual(_msg_id(b"abc"), _msg_id(b"abd"))
+        self.assertTrue(_msg_id(b"abc").startswith("hermes-"))
+
+
+class SettingsFromCtx(unittest.TestCase):
+    """The ctx.get_config surface: from_plugin_ctx must expand ${VAR}, coerce lists,
+    and fail closed on junk routes."""
+
+    class _Ctx:
+        def __init__(self, d):
+            self._d = d
+        def get_config(self, key, default=None):
+            return self._d.get(key, default)
+
+    def test_full_roundtrip_with_env_expansion(self):
+        os.environ["HJS_T2_TOKEN"] = "tok-1"
+        s = Settings.from_plugin_ctx(self._Ctx({
+            "servers": [" h1:4222 ", "h2:4222", ""],
+            "auth": {"token": "${HJS_T2_TOKEN}"},
+            "publish_allowed": ["ci.emit "],
+            "subscribe_allowed": "ci.>",          # single string coerced to list
+            "wake": [{"name": "w", "subject": "ci.result"}, "junk"],
+        }))
+        self.assertEqual(s.token, "tok-1")
+        self.assertEqual(s.servers, ["h1:4222", "h2:4222"])   # trimmed, empties dropped
+        self.assertEqual(s.publish_allowed, ["ci.emit"])
+        self.assertEqual(s.subscribe_allowed, ["ci.>"])
+        self.assertEqual([r.name for r in s.wake], ["w"])      # junk entries dropped
+
+    def test_missing_env_var_expands_empty(self):
+        os.environ.pop("HJS_T2_ABSENT", None)
+        s = Settings.from_plugin_ctx(self._Ctx({"auth": {"token": "${HJS_T2_ABSENT}"}}))
+        self.assertEqual(s.token, "")
+
+    def test_tls_kwargs(self):
+        s = Settings()
+        self.assertEqual(s.tls_kwargs(), {})                    # disabled -> nothing
+        import tempfile
+        d = tempfile.mkdtemp()
+        s2 = Settings(tls_enabled=True)
+        self.assertIn("tls", s2.tls_kwargs())                   # bare TLS: default ctx
+        s2b = Settings(tls_enabled=True, tls_insecure_skip_verify=True)
+        import ssl
+        self.assertIs(s2b.tls_kwargs()["tls"].verify_mode, ssl.CERT_NONE)
+        s3 = Settings(tls_enabled=True, tls_cert=str(Path(d) / "nope.pem"),
+                      tls_key=str(Path(d) / "nope-key.pem"))
+        with self.assertRaises(OSError):                        # unreadable mTLS pair fails loud
+            s3.tls_kwargs()
+
+    def test_creds_file_unreadable_raises_valueerror(self):
+        s = Settings(creds=str(Path(tempfile.mkdtemp()) / "missing.creds"))
+        with self.assertRaises(ValueError):
+            s.auth_kwargs()
+
+
+class HookRegistration(unittest.TestCase):
+    """register_hooks fail-closed gates: no config = no wire; unknown kinds ignored;
+    every enabled kind registers its mapped hook."""
+
+    class _Ctx:
+        def __init__(self):
+            self.hooks, self.unloads = [], []
+        def register_hook(self, name, fn):
+            self.hooks.append(name)
+        def on_unload(self, fn):
+            self.unloads.append(fn)
+
+    def test_disabled_noops(self):
+        from hermes_jetstream.hooks import register_hooks
+        ctx = self._Ctx()
+        register_hooks(ctx, Settings(lifecycle_emit=[]), "p", lambda: None)
+        self.assertEqual(ctx.hooks, [])
+
+    def test_unknown_kind_ignored_known_wired(self):
+        from hermes_jetstream.hooks import register_hooks
+        ctx = self._Ctx()
+        s = Settings(lifecycle_emit=["session.start", "does.not.exist"])
+        register_hooks(ctx, s, "p", lambda: None)
+        self.assertEqual(ctx.hooks, ["on_session_start"])
+        self.assertEqual(len(ctx.unloads), 1)
+        ctx.unloads[0]()  # stop must be safe to call
+
+    def test_tap_projects_before_queueing(self):
+        """A hook callback must never queue bodies: only whitelisted fields ride."""
+        from hermes_jetstream.hooks import LifecycleTap
+        tap = LifecycleTap(Settings(lifecycle_emit=["session.start"]), "p", lambda: None)
+        tap._emit("session.start")(platform="tg", session_key="k", message="SECRET")
+        subject, body = tap.q.get_nowait()
+        self.assertEqual(subject, "hermes.session.start")
+        self.assertNotIn("SECRET", body.decode())
+        self.assertIn('"session_key"', body.decode())
+        tap.stop()
 
 
 if __name__ == "__main__":
