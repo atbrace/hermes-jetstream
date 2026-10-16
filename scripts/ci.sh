@@ -40,6 +40,8 @@ fi
 if [ -n "${NATS_BIN:-}" ]; then
   note "auth matrix (7 modes + negative refusals)"
   "$PY" tests/auth_matrix.py || fail=1
+  note "silence drill (three silences + poison exhaustion)"
+  "$PY" tests/silence_drill.py || fail=1
 fi
 
 note "RESULT"
