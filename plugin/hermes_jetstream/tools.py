@@ -73,6 +73,26 @@ class JetstreamTools:
         self.settings = settings
         self.publish_policy = SubjectPolicy(settings.publish_allowed)
         self.fetch_policy = SubjectPolicy(settings.subscribe_allowed)
+        # hjs-9um: per-subject in-process resume cursor (last stream seq returned).
+        self._fetch_cursor: Dict[str, int] = {}
+
+    def _resume_cfg(self, subject: str):
+        """Ephemeral consumers default to DeliverPolicy.ALL, so a second fetch re-read
+        what the first returned and acked. First call reads the subject tail (documented
+        semantics); later calls resume after the cursor."""
+        seq = self._fetch_cursor.get(subject)
+        if seq is None:
+            return None
+        from nats.js.api import ConsumerConfig, DeliverPolicy
+        return ConsumerConfig(deliver_policy=DeliverPolicy.BY_START_SEQUENCE,
+                              opt_start_seq=seq + 1)
+
+    def _advance_cursor(self, subject: str, msgs) -> None:
+        try:
+            last = max(m.metadata.sequence.stream for m in msgs)
+        except Exception:
+            return
+        self._fetch_cursor[subject] = max(self._fetch_cursor.get(subject, 0), last)
 
     def _registry(self):
         """In-session watches live in the gateway adapter; tools reach them via the
@@ -137,6 +157,7 @@ class JetstreamTools:
             return f"ERROR: fetch failed: {exc}"
         if not msgs:
             return f"No messages on {subject} within {timeout_seconds:.0f}s."
+        self._advance_cursor(subject, msgs)
         out = []
         for m in msgs:
             try:
@@ -150,16 +171,17 @@ class JetstreamTools:
         return json.dumps(out, default=str)[:16000]
 
     async def _fetch(self, subject: str, timeout: float, batch: int):
+        cfg = self._resume_cfg(subject)
         bus = next((b for b in _active_bus() if b.connected), None)
         if bus is not None:
             try:
                 return await _on_bus_loop(bus, lambda: bus.fetch(subject, timeout=timeout,
-                                                                 batch=batch))
+                                                                 batch=batch, config=cfg))
             except BusLoopGone:
                 pass  # connection vanished between pick and use: ephemeral path below
 
         async def _go(js):
-            psub = await js.pull_subscribe(subject, stream=self.settings.stream)
+            psub = await js.pull_subscribe(subject, stream=self.settings.stream, config=cfg)
             try:
                 from nats.errors import TimeoutError as NT
                 try:

@@ -135,13 +135,14 @@ class NatsBus:
         )
         self._subs.append(sub)
 
-    async def fetch(self, subject: str, *, timeout: float = 30.0, batch: int = 1) -> List[Any]:
+    async def fetch(self, subject: str, *, timeout: float = 30.0, batch: int = 1,
+                    config=None) -> List[Any]:
         """Server-held pull (no polling loop): one fetch() call blocks in the server up to timeout.
         Ephemeral pull consumer per call — no durable state, so a restart can't wedge it."""
         if self._js is None:
             raise RuntimeError("jetstream not connected")
         from nats.errors import TimeoutError as NatsTimeoutError
-        psub = await self._js.pull_subscribe(subject, stream=self.settings.stream)
+        psub = await self._js.pull_subscribe(subject, stream=self.settings.stream, config=config)
         try:
             return await psub.fetch(batch, timeout=timeout)
         except NatsTimeoutError:

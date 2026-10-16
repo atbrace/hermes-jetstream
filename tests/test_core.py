@@ -459,6 +459,34 @@ class WatchabilityStats(unittest.TestCase):
         self.assertEqual(pipe.stats_snapshot(), {})  # nothing attempted = no row, not a lie
 
 
+class FetchResumeCursor(unittest.TestCase):
+    """hjs-9um: per-call ephemeral consumers replayed the subject from stream start,
+    so a second fetch re-read acked messages. The fix is an in-process resume cursor;
+    this pins the cursor config without touching NATS (behavior probed live too)."""
+
+    def _tools(self):
+        from hermes_jetstream.tools import JetstreamTools
+        from hermes_jetstream.config import Settings
+        return JetstreamTools(Settings(subscribe_allowed=["ci.>"]), None)
+
+    def test_no_cursor_means_no_config_override(self):
+        self.assertIsNone(self._tools()._resume_cfg("ci.x"))
+
+    def test_cursor_produces_start_sequence_plus_one(self):
+        t = self._tools()
+        t._advance_cursor("ci.x", [FakeMsg(b"a", seq=41), FakeMsg(b"b", seq=42)])
+        cfg = t._resume_cfg("ci.x")
+        self.assertIsNotNone(cfg)
+        self.assertEqual(str(cfg.deliver_policy), "DeliverPolicy.BY_START_SEQUENCE")
+        self.assertEqual(cfg.opt_start_seq, 43)
+
+    def test_cursor_only_advances(self):
+        t = self._tools()
+        t._advance_cursor("ci.x", [FakeMsg(b"a", seq=50)])
+        t._advance_cursor("ci.x", [FakeMsg(b"b", seq=45)])   # out-of-order batch: no rewind
+        self.assertEqual(t._fetch_cursor["ci.x"], 50)
+
+
 class BusLoopCapture(unittest.TestCase):
     """hjs-c81 dogfood: nats-py stores no _loop on the client, so a property that
     reads _nc._loop is ALWAYS None — which silently killed the lifecycle tap and

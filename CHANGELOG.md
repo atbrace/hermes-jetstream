@@ -19,8 +19,9 @@ ephemeral connect path; wake sessions now authorize per-platform via
 mis-guessed tool kwargs return a hint instead of a raw TypeError.
 
 Also: silence drill (`tests/silence_drill.py`) wired into `scripts/ci.sh`; poison
-exhaustion now provably loses wakes with no record (open). Fetch re-reads acked
-messages under replay-all (open): use distinct subjects per fetch cycle until fixed.
+exhaustion now provably loses wakes with no record (open). `nats_fetch` now resumes
+after the last returned message within a process instead of replaying acked
+messages (see CONFIG-REFERENCE fetch resume semantics).
 
 ## 0.9.0 — first community release candidate (2026-10-15)
 
