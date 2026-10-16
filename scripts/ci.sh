@@ -14,7 +14,9 @@ note "unit tests (stdlib-only, LAN-hermetic)"
 "$PY" -m unittest tests.test_core 2>&1 || fail=1
 
 note "generality gate (no environment references in plugin/)"
-if grep -rniE "consul|192\.168|initzero|forgejo|nomad|sysadmin|service\." plugin/; then
+# -I and the pycache exclusion matter: generated .pyc embed the absolute checkout
+# path, and this repo's own path contains gate tokens (sysadmin/...). Source only.
+if grep -rniEI --exclude-dir=__pycache__ "consul|192\.168|initzero|forgejo|nomad|sysadmin|service\." plugin/; then
   echo "FAIL: environment reference found"; fail=1
 else
   echo "clean"
