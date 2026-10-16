@@ -23,19 +23,26 @@ except ImportError:
 class NatsBus:
     def __init__(self, settings, profile_name: str,
                  disconnected_cb: Optional[Callable[[], None]] = None,
-                 reconnected_cb: Optional[Callable[[], None]] = None):
+                 reconnected_cb: Optional[Callable[[], None]] = None,
+                 error_cb: Optional[Callable[[Any], None]] = None):
         self.settings = settings
         self.profile_name = profile_name
         self._nc = None
         self._js = None
+        self._loop: Optional["asyncio.AbstractEventLoop"] = None
         self._subs: List[Any] = []
         self._closing = False
         self._disconnected_cb = disconnected_cb
         self._reconnected_cb = reconnected_cb
+        self._error_cb_user = error_cb
 
-    @staticmethod
-    async def _error_cb(exc) -> None:
+    async def _error_cb(self, exc) -> None:
         logger.warning("[jetstream] client error: %s", exc)
+        if self._error_cb_user is not None:
+            try:
+                self._error_cb_user(exc)
+            except Exception:
+                logger.debug("[jetstream] error_cb failed", exc_info=True)
 
     @property
     def connected(self) -> bool:
@@ -47,8 +54,16 @@ class NatsBus:
 
     @property
     def loop(self):
-        """The event loop this connection is bound to (for run_coroutine_threadsafe)."""
-        return getattr(self._nc, "_loop", None) if self.connected else None
+        """The event loop this connection is bound to (for run_coroutine_threadsafe).
+
+        Captured at connect(): nats-py binds its transport to the loop running
+        connect() but never stores it on the client (no `_loop` attribute), so
+        reading the instance attribute is the only correct source. None after
+        close(). (hjs-c81 dogfood: reading `_nc._loop` was always None, which
+        silently disabled the lifecycle tap and forced every tool call onto the
+        ephemeral fallback.)
+        """
+        return self._loop if (self._nc is not None and not self._nc.is_closed) else None
 
     async def connect(self) -> None:
         if not HAVE_NATS:
@@ -85,6 +100,7 @@ class NatsBus:
             raise
         self._nc = nc
         self._js = nc.jetstream()
+        self._loop = asyncio.get_running_loop()
         logger.info("[jetstream] connected to %s (stream=%s)", self.settings.servers, self.settings.stream)
 
     async def publish(self, subject: str, payload: bytes,
@@ -119,13 +135,14 @@ class NatsBus:
         )
         self._subs.append(sub)
 
-    async def fetch(self, subject: str, *, timeout: float = 30.0, batch: int = 1) -> List[Any]:
+    async def fetch(self, subject: str, *, timeout: float = 30.0, batch: int = 1,
+                    config=None) -> List[Any]:
         """Server-held pull (no polling loop): one fetch() call blocks in the server up to timeout.
         Ephemeral pull consumer per call — no durable state, so a restart can't wedge it."""
         if self._js is None:
             raise RuntimeError("jetstream not connected")
         from nats.errors import TimeoutError as NatsTimeoutError
-        psub = await self._js.pull_subscribe(subject, stream=self.settings.stream)
+        psub = await self._js.pull_subscribe(subject, stream=self.settings.stream, config=config)
         try:
             return await psub.fetch(batch, timeout=timeout)
         except NatsTimeoutError:

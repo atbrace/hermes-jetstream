@@ -1,5 +1,5 @@
 name: hermes-jetstream
-version: 0.9.0
+version: 0.10.0
 kind: platform
 label: JetStream
 description: >
@@ -19,6 +19,7 @@ provides_tools:
   - jetstream_watch
   - jetstream_unwatch
   - jetstream_list
+  - jetstream_status
 config_schema:
   servers: { type: list, default: ["localhost:4222"] }
   stream: { type: str, default: "hermes" }
@@ -30,3 +31,5 @@ config_schema:
   max_payload_bytes: { type: int, default: 32768 }
   lifecycle_emit: { type: list, default: [] }
   lifecycle_prefix: { type: str, default: "hermes" }
+  heartbeat_s: { type: int, default: 0 }
+  heartbeat_subject: { type: str, default: "" }

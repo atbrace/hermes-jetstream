@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.10.0 — watchability surface + first live-campaign fixes (2026-10-16)
+
+Watchability (hjs-htk): every pipeline verdict is now counted per route —
+including `failed` on dispatch exceptions, so an erroring route never reads as clean
+silence. The snapshot is exposed three ways: `jetstream_status` tool (sessions),
+`platforms.jetstream.metrics` in `gateway_state.json` (files/dashboard), and an
+opt-in heartbeat publish (`heartbeat_s` + `heartbeat_subject`, fail-closed on the
+publish allowlist) so a plain `nats watch` is a complete dead-man. No external
+monitoring required — the plugin's job is to be watchable; alerting stays the
+operator's.
+
+Found and fixed by the same day's live campaign on a production bus
+(docs/BATTLE-TEST.md): `bus.loop` was always None (nats-py stores no `_loop`),
+which had silently disabled the lifecycle tap and forced every tool call onto the
+ephemeral connect path; wake sessions now authorize per-platform via
+`JETSTREAM_ALLOWED_USERS` instead of default-denying to the global allowlist;
+mis-guessed tool kwargs return a hint instead of a raw TypeError.
+
+Also: silence drill (`tests/silence_drill.py`) wired into `scripts/ci.sh`; poison
+exhaustion now provably loses wakes with no record (open). `nats_fetch` now resumes
+after the last returned message within a process instead of replaying acked
+messages (see CONFIG-REFERENCE fetch resume semantics).
+
 ## 0.9.0 — first community release candidate (2026-10-15)
 
 MVP + all V1 gates except final catalog submission.

@@ -73,6 +73,26 @@ class JetstreamTools:
         self.settings = settings
         self.publish_policy = SubjectPolicy(settings.publish_allowed)
         self.fetch_policy = SubjectPolicy(settings.subscribe_allowed)
+        # hjs-9um: per-subject in-process resume cursor (last stream seq returned).
+        self._fetch_cursor: Dict[str, int] = {}
+
+    def _resume_cfg(self, subject: str):
+        """Ephemeral consumers default to DeliverPolicy.ALL, so a second fetch re-read
+        what the first returned and acked. First call reads the subject tail (documented
+        semantics); later calls resume after the cursor."""
+        seq = self._fetch_cursor.get(subject)
+        if seq is None:
+            return None
+        from nats.js.api import ConsumerConfig, DeliverPolicy
+        return ConsumerConfig(deliver_policy=DeliverPolicy.BY_START_SEQUENCE,
+                              opt_start_seq=seq + 1)
+
+    def _advance_cursor(self, subject: str, msgs) -> None:
+        try:
+            last = max(m.metadata.sequence.stream for m in msgs)
+        except Exception:
+            return
+        self._fetch_cursor[subject] = max(self._fetch_cursor.get(subject, 0), last)
 
     def _registry(self):
         """In-session watches live in the gateway adapter; tools reach them via the
@@ -137,6 +157,7 @@ class JetstreamTools:
             return f"ERROR: fetch failed: {exc}"
         if not msgs:
             return f"No messages on {subject} within {timeout_seconds:.0f}s."
+        self._advance_cursor(subject, msgs)
         out = []
         for m in msgs:
             try:
@@ -150,16 +171,17 @@ class JetstreamTools:
         return json.dumps(out, default=str)[:16000]
 
     async def _fetch(self, subject: str, timeout: float, batch: int):
+        cfg = self._resume_cfg(subject)
         bus = next((b for b in _active_bus() if b.connected), None)
         if bus is not None:
             try:
                 return await _on_bus_loop(bus, lambda: bus.fetch(subject, timeout=timeout,
-                                                                 batch=batch))
+                                                                 batch=batch, config=cfg))
             except BusLoopGone:
                 pass  # connection vanished between pick and use: ephemeral path below
 
         async def _go(js):
-            psub = await js.pull_subscribe(subject, stream=self.settings.stream)
+            psub = await js.pull_subscribe(subject, stream=self.settings.stream, config=cfg)
             try:
                 from nats.errors import TimeoutError as NT
                 try:
@@ -214,14 +236,24 @@ def register_tools(ctx) -> None:
             holder["t"] = JetstreamTools(Settings.from_plugin_ctx(ctx), ctx)
         return holder["t"]
 
+    def _bound(coro_factory):
+        """Model-facing handler wrapper: a mis-guessed kwarg returns a schema hint,
+        not a raw TypeError traceback (hjs-fso: agents guess data= for payload=)."""
+        def _h(args, **kw):
+            try:
+                return _run_async(coro_factory(args))
+            except TypeError as exc:
+                return f"ERROR: bad tool arguments: {exc}"
+        return _h
+
     ctx.register_tool(
         name="nats_publish", toolset="jetstream", schema=PUBLISH_SCHEMA,
-        handler=lambda args, **kw: _run_async(_tools().nats_publish(**args)),
+        handler=_bound(lambda a: _tools().nats_publish(**a)),
         is_async=False, emoji="📡",
         description="Publish a JSON event to a NATS JetStream subject (allowlisted).")
     ctx.register_tool(
         name="nats_fetch", toolset="jetstream", schema=FETCH_SCHEMA,
-        handler=lambda args, **kw: _run_async(_tools().nats_fetch(**args)),
+        handler=_bound(lambda a: _tools().nats_fetch(**a)),
         is_async=False, emoji="📡",
         description="Server-held pull of events from a NATS JetStream subject (bounded wait, allowlisted).")
 
@@ -261,6 +293,24 @@ def register_tools(ctx) -> None:
         handler=lambda args, **kw: _list(args, kw),
         is_async=False, emoji="📡",
         description="List active JetStream watches (id, subject, remaining TTL).")
+
+    def _status(args, kw):
+        try:
+            from .adapter import active_status
+            snaps = active_status()
+        except Exception:
+            snaps = []
+        if not snaps:
+            return ("No live gateway adapter in this process (CLI/cron). The platform's "
+                    "status surface lives in the gateway; check gateway_state.json "
+                    "platforms.jetstream.metrics instead.")
+        return json.dumps(snaps, default=str, indent=1)
+
+    ctx.register_tool(
+        name="jetstream_status", toolset="jetstream", schema={"type": "object", "properties": {}},
+        handler=lambda args, **kw: _status(args, kw),
+        is_async=False, emoji="📡",
+        description="JetStream platform health: connection, per-route wake counters (dispatched/shed/coalesced/skipped), last-attempt/last-dispatch clocks, active watches, last error. Answers 'is my watch alive?' without external monitoring.")
 
 
 def _run_async(coro):
