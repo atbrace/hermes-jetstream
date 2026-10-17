@@ -62,11 +62,41 @@ class WakeLedger:
                 (now, dedupe_key))
             self._db.commit()
 
+    def reconcile_lost(self, now: float | None = None) -> list:
+        """Startup crash-reconcile (hjs-25g): 'claimed' rows past reclaim_after_s are
+        evidence the owner died mid-run (the server had already acked the wake, so
+        redelivery never revisits them). Mark them 'lost' so the loss is recorded
+        once and survives restarts; a late redelivery of a lost row still
+        re-claims (status != done), which is the right second chance."""
+        now = now if now is not None else time.time()
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT dedupe_key, route, claimed_at FROM wake_claims "
+                "WHERE status='claimed' AND claimed_at < ? ORDER BY claimed_at",
+                (now - self._reclaim_after_s,)).fetchall()
+            if rows:
+                self._db.executemany(
+                    "UPDATE wake_claims SET status='lost', done_at=? WHERE dedupe_key=?",
+                    [(now, r[0]) for r in rows])
+                self._db.commit()
+            return rows
+
+    def mark_lost(self, dedupe_key: str, now: float | None = None) -> None:
+        """Record a wake lost at its final delivery (hjs-xq5): the server gives up
+        after max_deliver, so this is the plugin's only durable record of the loss."""
+        now = now if now is not None else time.time()
+        with self._lock:
+            self._db.execute(
+                "UPDATE wake_claims SET status='lost', done_at=? "
+                "WHERE dedupe_key=? AND status='claimed'", (now, dedupe_key))
+            self._db.commit()
+
     def prune(self, older_than_s: float = 7 * 86400, now: float | None = None) -> int:
         now = now if now is not None else time.time()
         with self._lock:
             cur = self._db.execute(
-                "DELETE FROM wake_claims WHERE status='done' AND done_at < ?", (now - older_than_s,))
+                "DELETE FROM wake_claims WHERE status IN ('done','lost') AND done_at < ?",
+                (now - older_than_s,))
             self._db.commit()
             return cur.rowcount
 
