@@ -1,10 +1,10 @@
 # Examples
 
-Drop-in `settings` blocks. Every example assumes `docker run -p 4222:4222 nats:2-alpine -js`
-and a stream bound to your subject space, e.g.:
+Drop-in `settings` blocks. Each example names its own subjects, so add them to your
+`subscribe_allowed` and to a stream you own (the plugin never creates one), e.g.:
 
 ```bash
-nats stream add hermes --subjects 'hermes.> ci.> deploy.>' --storage file --max-msgs -1
+nats stream add hermes --subjects 'hermes.> ci.> deploy.> team.notes.>' --storage file --max-msgs -1
 ```
 
 ## 1. Wake the agent when CI goes red
