@@ -75,3 +75,12 @@ crash (found at startup reconcile), are logged at WARNING, written to the ledger
 Wire whatever dead-man you already run to whichever surface is cheapest for you. The
 plugin distinguishes idle from shed from broken; *alerting on it* stays your side, and
 the watchdog must be separate from the thing it watches.
+
+## Gate parity (CI)
+
+`scripts/ci.sh` IS the gate: unit tests, the generality grep-gate, syntax, and doctor.
+`.github/workflows/ci.yml` adds the live jobs (smoke, auth matrix, cluster drill, silence
+drill) on top by booting its own scratch nats-server. A Forgejo/GitHub instance with no
+runner still gates honestly: run `./scripts/ci.sh` before merging — it is byte-for-byte
+the same hermetic check the `CI / core` context runs, and `NATS_BIN=/path/to/nats-server
+./scripts/ci.sh` reproduces the `CI / live` additions. No behavior lives only in YAML.
