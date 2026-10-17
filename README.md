@@ -19,6 +19,13 @@ Together these make the agent an ordinary citizen of your event flow. Anything o
 - The plugin runs as a gateway-resident supervisor (`kind: platform` plugin). It uses durable consumers with manual ack and an idempotent wake ledger, so delivery is at-least-once and deduped.
 - Publishing is default-deny through the subject allowlist. Loop breakers (no-self-wake) are on by default.
 
+## Disclosures
+
+- Network: connects only to the NATS servers you configure; no third-party calls, no telemetry.
+- Long-running: the platform adapter holds persistent subscriptions and reconnect loops for its lifetime, inside the gateway process.
+- Credentials: token / nkey / user-pass / creds-file values come from your config `${VAR}` references, resolved through Hermes' profile-scoped secret scope. The plugin never writes or rotates them.
+- Wakes inject event payloads into prompts. Keep `subscribe_allowed` tight to subjects whose publishers you trust.
+
 ## Quickstart
 
 Point the plugin at a NATS server that has JetStream enabled, and create a stream over the subject space you want agents to see (the plugin never creates one):

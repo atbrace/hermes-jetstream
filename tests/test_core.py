@@ -640,6 +640,28 @@ class Config(unittest.TestCase):
         merged = s.merge_platform_config(s, type("PC", (), {"extra": {"token": "${HJS_TEST_TOKEN}"}, "token": None})())
         self.assertEqual(merged.token, "s3cr3t")
 
+    def test_secret_expansion_prefers_agent_scope(self):
+        # catalog rule 11: when agent.secret_scope is importable, ${VAR} goes
+        # through get_secret (profile-scoped), never bare os.environ.
+        import hermes_jetstream.config as cfg
+        calls = []
+        fake = types.ModuleType("agent.secret_scope")
+        fake.get_secret = lambda name, default=None: (calls.append(name), "scoped")[1]
+        fake_pkg = types.ModuleType("agent")
+        fake_pkg.secret_scope = fake
+        saved = {m: sys.modules.get(m) for m in ("agent", "agent.secret_scope")}
+        sys.modules["agent"], sys.modules["agent.secret_scope"] = fake_pkg, fake
+        try:
+            os.environ["HJS_TEST_TOKEN"] = "environ-value"
+            self.assertEqual(cfg._expand("${HJS_TEST_TOKEN}"), "scoped")
+            self.assertEqual(calls, ["HJS_TEST_TOKEN"])
+        finally:
+            for m, v in saved.items():
+                if v is None:
+                    del sys.modules[m]
+                else:
+                    sys.modules[m] = v
+
     def test_auth_kwargs_precedence(self):
         import tempfile
         from pathlib import Path

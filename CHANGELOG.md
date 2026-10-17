@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.1 — profile-scoped secret reads (2026-10-17)
+
+Catalog admission rule 11: `${VAR}` secret expansion in plugin settings now
+resolves through `agent.secret_scope.get_secret` (profile-scoped under gateway
+multiplexing) instead of a bare `os.environ` read. Single-profile behavior is
+unchanged; under multiplexing a profile can no longer pick up another profile's
+credential. Public API, config keys, and wire behavior unchanged.
+
 ## 1.0.0 — first stable release (2026-10-17)
 
 Promoted 0.11.0 to stable. Every gate in `docs/V1-READINESS.md` is checked except
