@@ -190,6 +190,7 @@ class FakeMsg:
         self._md = (stream, consumer, seq, attempt)
         self.acked = False
         self.naked = False
+        self.terminaled = False
 
     @property
     def metadata(self):  # nats-py: metadata is a property, not a method
@@ -203,6 +204,9 @@ class FakeMsg:
 
     async def nak(self, delay=0):
         self.naked = True
+
+    async def term(self):
+        self.terminaled = True
 
 
 class WakePipelineGuards(unittest.TestCase):
@@ -856,3 +860,131 @@ class HookRegistration(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class LostWakeAccounting(unittest.TestCase):
+    """hjs-25g + hjs-xq5: a lost wake must be RECORDED wherever it dies."""
+
+    def _pipe(self, db, dispatch=None):
+        return WakePipeline(["ci.>"], WakeLedger(db, reclaim_after_s=10),
+                            dispatch or (lambda r, p: asyncio.sleep(0)), "p", "N")
+
+    def test_startup_reconcile_marks_and_counts(self):
+        db = Path(tempfile.mkdtemp()) / "l.db"
+        led = WakeLedger(db, reclaim_after_s=10)
+        led.claim("s:c:9", "r1", now=time.time() - 30)   # dead: past reclaim window
+        led.claim("s:c:10", "r1", now=time.time())       # fresh: in flight elsewhere
+        rows = led.reconcile_lost()
+        self.assertEqual([r[0] for r in rows], ["s:c:9"])
+        pipe = self._pipe(db)
+        pipe.note_lost("r1", n=len(rows))
+        self.assertEqual(pipe.stats_snapshot()["r1"]["lost"], 1)
+        self.assertEqual(pipe.stats_snapshot()["r1"]["attempted"], 0)  # not a delivery attempt
+        self.assertEqual(led.reconcile_lost(), [])       # recorded once; idempotent
+        self.assertTrue(led.claim("s:c:9", "r1"))        # lost row re-claims: second chance
+
+    def test_final_delivery_failure_records_loss(self):
+        db = Path(tempfile.mkdtemp()) / "l.db"
+        pipe = self._pipe(db, dispatch=lambda r, p: _boom())
+        m = FakeMsg(b'{"data": 1}', seq=77, attempt=5)   # max_deliver=5: final delivery
+        with self.assertRaises(RuntimeError):
+            asyncio.run(pipe.handle_message(m, WakeRoute(name="r1", subject="ci.result")))
+        st = pipe.stats_snapshot()["r1"]
+        self.assertEqual(st["lost"], 1)
+        self.assertTrue(m.terminaled)                    # consumer closes it terminal
+        import sqlite3
+        with sqlite3.connect(db) as c:
+            status = c.execute("SELECT status FROM wake_claims WHERE dedupe_key LIKE '%:77'").fetchone()[0]
+        self.assertEqual(status, "lost")
+
+    def test_penultimate_failure_still_redelivers(self):
+        db = Path(tempfile.mkdtemp()) / "l.db"
+        pipe = self._pipe(db, dispatch=lambda r, p: _boom())
+        m = FakeMsg(b'{"data": 1}', seq=78, attempt=4)   # one left: NOT the final delivery
+        with self.assertRaises(RuntimeError):
+            asyncio.run(pipe.handle_message(m, WakeRoute(name="r1", subject="ci.result")))
+        self.assertEqual(pipe.stats_snapshot()["r1"]["lost"], 0)
+        self.assertFalse(m.terminaled)
+
+
+def _boom():
+    raise RuntimeError("dispatch failed")
+
+
+class ReconnectLogging(unittest.TestCase):
+    """hjs-2qk: NatsBus logs the gap and counts reconnections."""
+
+    def test_disconnect_reconnect_cycle(self):
+        from hermes_jetstream.bus import NatsBus
+        bus = NatsBus(Settings(), "t")
+        with self.assertLogs("hermes_jetstream.bus", level="INFO") as logs:
+            asyncio.run(bus._on_disconnected())
+            asyncio.run(bus._on_reconnected())
+        self.assertEqual(bus.reconnect_count, 1)
+        self.assertTrue(any("disconnected" in m and m.startswith("WARNING") for m in logs.output))
+        self.assertTrue(any("reconnected" in m and "reconnect_count=1" in m
+                            and m.startswith("INFO") for m in logs.output))
+
+    def test_intentional_close_is_quiet(self):
+        import logging
+        from hermes_jetstream.bus import NatsBus
+        bus = NatsBus(Settings(), "t")
+        bus._closing = True
+        records = []
+
+        class _H(logging.Handler):
+            def emit(self, record):
+                records.append(record)
+
+        lg = logging.getLogger("hermes_jetstream.bus")
+        h = _H()
+        lg.addHandler(h)
+        try:
+            asyncio.run(bus._on_disconnected())
+        finally:
+            lg.removeHandler(h)
+        self.assertEqual([r for r in records if "disconnected" in r.getMessage()], [])
+        self.assertEqual(bus.reconnect_count, 0)
+
+
+class LifecycleTapCounters(unittest.TestCase):
+    """hjs-azz: the tap counts every emit decision; failures are loud."""
+
+    def test_emit_and_publish_counted(self):
+        from hermes_jetstream.hooks import LifecycleTap, tap_stats
+        tap = LifecycleTap(Settings(lifecycle_emit=["session.start"]), "p", lambda: None)
+        before = tap_stats()["emitted"]
+        tap._emit("session.start")(platform="tg", session_key="k")
+        self.assertEqual(tap.stats()["emitted"], 1)
+        self.assertGreaterEqual(tap_stats()["emitted"], before + 1)
+        tap.stop()
+
+    def test_publish_failure_counted_and_loud(self):
+        from hermes_jetstream.hooks import LifecycleTap
+        tap = LifecycleTap(Settings(lifecycle_emit=["session.start"]), "p", lambda: None)
+        tap._emit("session.start")(platform="tg", session_key="k")
+
+        class _DeadBus:
+            loop = None
+        bus = _DeadBus()
+        tap.get_bus = lambda: bus
+        # loop None -> the drain skips publish: must count as failed, not silently drop
+        # by injecting a get_bus that raises instead:
+        def _boom_bus():
+            raise RuntimeError("bus gone")
+        tap.get_bus = _boom_bus
+        tap._stop.clear()
+        t = threading.Thread(target=tap._drain, daemon=True)
+        t.start()
+        time.sleep(1.5)
+        tap._stop.set()
+        t.join(timeout=3)
+        self.assertGreaterEqual(tap.stats()["failed"], 1)
+
+    def test_oversize_dropped_counted(self):
+        from hermes_jetstream.hooks import LifecycleTap
+        tap = LifecycleTap(Settings(lifecycle_emit=["session.start"], max_payload_bytes=10),
+                           "p", lambda: None)
+        tap._emit("session.start")(platform="tg", session_key="k" * 100)
+        self.assertEqual(tap.stats()["dropped"], 1)
+        tap.stop()

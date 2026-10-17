@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.11.0 — every lost wake leaves a record (2026-10-16)
+
+The "a probe that errors must never read as clean" doctrine, applied to wakes:
+nothing that loses an event stays silent anymore.
+
+- Poison exhaustion recorded (hjs-xq5): when the final allowed delivery fails, the
+  plugin logs a WARNING, writes ledger `status='lost'`, counts route `lost`, and
+  `term()`s the message. The silence drill S4 now asserts the record exists.
+  (A DLQ *subject* remains a documented non-goal; the record is the deliverable.)
+- Crash losses found at startup (hjs-25g): claimed-never-done ledger rows past the
+  reclaim window are reconciled at connect — logged once, counted as `lost`. A
+  restart no longer erases the difference between "route idle" and "route lost a
+  wake to the crash". Route stats rows are also seeded at bind, so an absent
+  metrics row now strictly means the platform never came up.
+- Reconnect forensics (hjs-2qk): unplanned disconnects log at WARNING, reconnects
+  log at INFO with the down duration, and `reconnect_count` rides in every status
+  surface (intentional shutdown stays quiet).
+- Lifecycle tap counted (hjs-azz): emitted/dropped/published/failed per tap process,
+  surfaced as `lifecycle` in the status snapshot; publish failures moved from debug
+  to WARNING.
+
 ## 0.10.0 — watchability surface + first live-campaign fixes (2026-10-16)
 
 Watchability (hjs-htk): every pipeline verdict is now counted per route —
