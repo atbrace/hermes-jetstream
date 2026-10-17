@@ -70,7 +70,9 @@ why they exist):
 
 A wake that dies is never silent: final-delivery exhaustion, and claims orphaned by a
 crash (found at startup reconcile), are logged at WARNING, written to the ledger
-(`status='lost'`), and counted as route `lost` (hjs-xq5, hjs-25g).
+(`status='lost'`), and counted as route `lost` (hjs-xq5, hjs-25g). There is no DLQ
+subject: the plugin records the loss, it does not resurrect the event. Replay after a
+recorded loss is your call — `nats_fetch` the subject window, or republish upstream.
 
 Wire whatever dead-man you already run to whichever surface is cheapest for you. The
 plugin distinguishes idle from shed from broken; *alerting on it* stays your side, and
