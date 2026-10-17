@@ -81,6 +81,10 @@ def ev(scenario: str, surface: str, observed: str):
     print(f"EVIDENCE [{scenario}] {surface}: {observed}")
 
 
+async def _failing_dispatch(route, prompt):
+    raise RuntimeError("poison: dispatch always fails")
+
+
 async def main() -> int:
     if not shutil.which(NATS_BIN):
         print("SKIP: nats-server not found (set NATS_BIN)")
@@ -124,8 +128,9 @@ async def main() -> int:
         s2 = consumer_counters(mon, "hjs-sil-drill")
         ev("S2-idle", "jsz consumer", f"{s2} (identical to S1 snapshot)")
         assert s2 == s1, "idle vs typo must be identical at this surface (the premise)"
-        ev("S2-idle", "plugin log/state", "verdict strings (shed/coalesced/dispatched) are RETURNED "
-           "but never recorded: silence and skip and shed all read as an empty plugin surface — GAP, feeds hjs-htk")
+        ev("S2-idle", "plugin log/state", "server-side surfaces cannot tell these apart; "
+           "the plugin's per-route stats (hjs-htk, shipped 0.10.0) carry attempted/last_attempt_ts "
+           "and DO: attempted=1 (S1 msg) vs unchanged (S2 idle)")
 
         # S3: gap-window replay. Publish while the durable consumer is INACTIVE (sub torn
         # down; stream retains) — the outage-equivalent from the consumer's view. Reattach,
@@ -151,7 +156,12 @@ async def main() -> int:
         ev("S3-gap", "plugin log/state", "while the consumer was inactive the plugin surface said "
            "NOTHING — consumer-side gap invisible without jsz (feeds hjs-htk) — LOUD side OK")
 
-        # S4: poison — callback-level failure, custom short backoff, count to exhaustion
+        # S4: poison — callback-level failure, custom short backoff, count to exhaustion.
+        # hjs-xq5: the pipeline now RECORDS the loss at the final delivery (ledger
+        # 'lost', WARNING, route lost-counter, term) instead of letting the wake vanish.
+        poison_pipe = WakePipeline(["hjs.drill.>"], WakeLedger(d1 / "poison.db", reclaim_after_s=0.5),
+                                   _failing_dispatch, "soldrill", "notme")
+        poison_route = WakeRoute(name="poison", subject=POISON_SUBJ, durable="hjs-poison-drill")
         hits = []
         psub = await bus.jetstream.pull_subscribe(
             POISON_SUBJ, durable="hjs-poison-drill", stream="SIL", config=_poison_cfg())
@@ -164,7 +174,10 @@ async def main() -> int:
                     continue
                 for m in msgs:
                     hits.append(m.metadata.num_delivered)
-                    # never ack -> redelivery until max_deliver exhausts
+                    try:
+                        await poison_pipe.handle_message(m, poison_route)
+                    except Exception:
+                        pass  # dispatch failure forces redelivery
         task = asyncio.create_task(poison_loop())
         penv = build_envelope("poison", {"die": True}, profile="other", source="drill")
         penv["origin"]["nonce"] = "not-us"
@@ -175,12 +188,18 @@ async def main() -> int:
         after = consumer_counters(mon, "hjs-poison-drill")
         ev("S4-poison", "observed", f"delivery attempts={hits} exhausted={exhausted}; consumer after: {after}")
         assert exhausted and len(hits) == 5, f"expected exactly 5 attempts, got {hits}"
-        ev("S4-poison", "post-exhaustion", "wake is PERMANENTLY LOST to the consumer after 5 attempts; "
-           "no term advisory, no DLQ, no plugin-side record of the loss — only a stream body until "
-           "retention deletes it (hjs-xq5)")
+        pst = poison_pipe.stats_snapshot().get("poison", {})
+        assert pst.get("lost") == 1, f"lost-wake counter missing: {pst}"
+        assert pst.get("failed") == 5, f"expected 5 failures counted, got {pst}"
+        import sqlite3
+        with sqlite3.connect(d1 / "poison.db") as c:
+            rows = c.execute("SELECT status FROM wake_claims").fetchall()
+        assert rows and rows[0][0] == "lost", f"ledger loss record missing: {rows}"
+        ev("S4-poison", "post-exhaustion", "wake loss now RECORDED: pipeline lost=1, ledger "
+           "status='lost', term closes the consumer entry (hjs-xq5 fix). Counter surfaces: "
+           f"jetstream_status/gateway metrics route stats 'lost' key. Consumer after: {after}")
         await bus.jetstream.delete_consumer("SIL", "hjs-poison-drill")
-        print("PASS: three silences characterized; plugin-side counters missing (hjs-htk); "
-              "DLQ absence confirmed (hjs-xq5)")
+        print("PASS: three silences characterized; poison loss recorded (hjs-xq5)")
         return 0
     finally:
         proc.terminate()

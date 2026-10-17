@@ -15,6 +15,8 @@ from typing import Any, Callable, Dict, Optional
 from .envelope import is_self_origin, parse_envelope, render_prompt
 from .subject import matches_any
 
+logger = __import__("logging").getLogger("hermes_jetstream.wake")
+
 
 @dataclass
 class _Bucket:
@@ -30,26 +32,36 @@ class WakePipeline:
     dispatch: Callable[[Any, str], Any]               # (route, prompt) -> awaitable/None
     profile_name: str
     nonce: str
+    max_deliver: int = 5                              # must match bus ConsumerConfig(max_deliver)
     _buckets: Dict[str, _Bucket] = field(default_factory=dict)
     # hjs-htk watchability: every verdict increments a counter and stamps the clock, so
     # "nothing happened" and "working, nothing to do" and "shedding" are distinguishable
     # from the plugin's own surfaces (measured gap: docs/BATTLE-TEST.md).
     stats: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
-    def _stat(self, route_name: str, verdict: str, now: float) -> None:
+    def _stat(self, route_name: str, verdict: str, now: float, attempted: bool = True) -> None:
         s = self.stats.setdefault(route_name, {"attempted": 0, "last_attempt_ts": 0.0,
                                                "last_dispatch_ts": 0.0,
                                                "dispatched": 0, "shed": 0, "coalesced": 0,
                                                "skipped_self_origin": 0,
                                                "skipped_not_allowed": 0,
-                                               "skipped_duplicate": 0, "failed": 0})
-        s["attempted"] += 1
-        s["last_attempt_ts"] = now
+                                               "skipped_duplicate": 0, "failed": 0,
+                                               "lost": 0})
+        if attempted:
+            s["attempted"] += 1
+            s["last_attempt_ts"] = now
         if verdict in ("dispatched", "shed", "coalesced", "skipped_self_origin",
-                       "skipped_not_allowed", "skipped_duplicate", "failed"):
+                       "skipped_not_allowed", "skipped_duplicate", "failed", "lost"):
             s[verdict] += 1
         if verdict == "dispatched":
             s["last_dispatch_ts"] = now
+
+    def note_lost(self, route_name: str, n: int = 1) -> None:
+        """Record wake losses not tied to a fresh delivery attempt (hjs-25g startup
+        reconcile, hjs-xq5 final-delivery exhaustion). The counter makes 'lost N'
+        visible wherever route stats surface, so a lost wake never reads as idle."""
+        for _ in range(n):
+            self._stat(route_name, "lost", time.time(), attempted=False)
 
     def stats_snapshot(self) -> Dict[str, Any]:
         return {name: dict(s) for name, s in self.stats.items()}
@@ -82,9 +94,34 @@ class WakePipeline:
             # dispatch failure forces redelivery; count it so an erroring route never
             # reads as clean silence (a probe that errors must never look healthy)
             self._stat(route.name, "failed", time.time())
+            await self._record_final_delivery(msg, route)
             raise
         self._stat(route.name, verdict, time.time())
         return verdict
+
+    async def _record_final_delivery(self, msg, route) -> None:
+        """Last allowed delivery (num_delivered == max_deliver) just failed: the server
+        will not redeliver, so the wake is gone. Record it durably (ledger 'lost'),
+        visibly (WARNING + route 'lost' counter), and term the message so the consumer
+        closes it with a terminal record instead of vanishing it silently (hjs-xq5)."""
+        try:
+            key, seq, attempt = _msg_identity(msg)
+            if attempt < self.max_deliver:
+                return
+            self.note_lost(route.name)
+            if key:
+                self.ledger.mark_lost(key)
+            logger.warning("[jetstream] wake LOST on final delivery: route=%s stream_seq=%s "
+                           "deliveries=%d; server will not redeliver (recorded in wake-claims.db, "
+                           "counted as lost=%d for this route)",
+                           route.name, seq, attempt,
+                           self.stats.get(route.name, {}).get("lost", 1))
+            try:
+                await msg.term()
+            except Exception:
+                pass  # term unsupported (unit FakeMsg) / already closed: record stands
+        except Exception:
+            logger.debug("[jetstream] final-delivery record failed", exc_info=True)
 
     async def _handle(self, msg, route) -> str:
         now = time.time()

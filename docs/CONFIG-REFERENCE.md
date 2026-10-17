@@ -58,14 +58,29 @@ Three plugin-owned surfaces answer "is my watch alive?" (see `docs/BATTLE-TEST.m
 why they exist):
 
 1. **`jetstream_status` tool** — per-route counters (`dispatched`/`shed`/`coalesced`/
-   `skipped_*`/`failed`), `attempted`, last-attempt and last-dispatch clocks, connection
-   state, active watches, and the last client error.
+   `skipped_*`/`failed`/`lost`), `attempted`, last-attempt and last-dispatch clocks,
+   connection state, `reconnect_count`, active watches, lifecycle tap counters when the
+   tap is on, and the last client error. Every route you configured shows a row from the
+   moment the platform binds (zeroed), so an absent row means the platform never came up.
 2. **`gateway_state.json → platforms.jetstream.metrics`** — the same snapshot, mirrored
    every 60 s for anything that reads files (dashboard, cron probe, your own collector).
 3. **Heartbeat events** — with `heartbeat_s` set, a status JSON lands on your subject
    every interval; a plain `nats watch hermes.heartbeat` (or any consumer) is then a
    complete dead-man: no message within 2× the interval means the platform is dead.
 
+A wake that dies is never silent: final-delivery exhaustion, and claims orphaned by a
+crash (found at startup reconcile), are logged at WARNING, written to the ledger
+(`status='lost'`), and counted as route `lost` (hjs-xq5, hjs-25g).
+
 Wire whatever dead-man you already run to whichever surface is cheapest for you. The
 plugin distinguishes idle from shed from broken; *alerting on it* stays your side, and
 the watchdog must be separate from the thing it watches.
+
+## Gate parity (CI)
+
+`scripts/ci.sh` IS the gate: unit tests, the generality grep-gate, syntax, and doctor.
+`.github/workflows/ci.yml` adds the live jobs (smoke, auth matrix, cluster drill, silence
+drill) on top by booting its own scratch nats-server. A Forgejo/GitHub instance with no
+runner still gates honestly: run `./scripts/ci.sh` before merging — it is byte-for-byte
+the same hermetic check the `CI / core` context runs, and `NATS_BIN=/path/to/nats-server
+./scripts/ci.sh` reproduces the `CI / live` additions. No behavior lives only in YAML.

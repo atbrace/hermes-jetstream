@@ -98,6 +98,7 @@ def _build_class():
                 subscribe_allowed=self.settings.subscribe_allowed,
                 ledger=self._ledger, dispatch=self._dispatch,
                 profile_name=self._profile_name, nonce=GATEWAY_NONCE)
+            self._reconcile_lost()
             self._watches = WatchRegistry(
                 policy=SubjectPolicy(self.settings.subscribe_allowed),
                 open_sub=self._bus.subscribe_ephemeral,
@@ -109,6 +110,7 @@ def _build_class():
                     await self._bus.subscribe_wake(
                         subject=r.subject, queue=r.durable,  # queue name == durable consumer name
                         on_message=lambda msg, route=r: self._pipeline.handle_message(msg, route))
+                self._seed_route_stats(routes)
                 self._sweep_task = asyncio.create_task(self._sweep_loop())
             except Exception:
                 logger.exception("[jetstream] connect failed; platform stays down (gateway healthy)")
@@ -122,6 +124,33 @@ def _build_class():
 
         _watch_keys: Dict[str, str] = {}
 
+        def _reconcile_lost(self) -> None:
+            """hjs-25g: a claimed-never-done ledger row past the reclaim window is the
+            at-rest fingerprint of a crash between dispatch and ack — the wake is gone
+            (the server already acked it). Say so loudly once at startup, and count it
+            so the loss survives into every status surface."""
+            try:
+                rows = self._ledger.reconcile_lost()
+            except Exception:
+                logger.debug("[jetstream] startup reconcile failed", exc_info=True)
+                return
+            for key, route, claimed_at in rows:
+                logger.warning("[jetstream] wake LOST to crash before restart: route=%s "
+                               "claim=%s claimed_at=%s (acked pre-crash, server will not "
+                               "redeliver)", route or "?", key[:48],
+                               time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(claimed_at)))
+                if self._pipeline:
+                    self._pipeline.note_lost(route or "?")
+
+        def _seed_route_stats(self, routes) -> None:
+            """Every bound route gets a stats row at connect (hjs-25g): absent-vs-zero
+            becomes explicit — a zero row means idle-but-alive, an absent row means
+            the platform never bound."""
+            if not self._pipeline:
+                return
+            for r in routes:
+                self._pipeline._stat(r.name, "seed", 0.0, attempted=False)
+
         def _note_error(self, exc) -> None:
             self._last_error = {"ts": time.time(), "msg": str(exc)[:200]}
 
@@ -133,12 +162,19 @@ def _build_class():
                 "connected": bool(self._bus and self._bus.connected),
                 "stream": self.settings.stream,
                 "servers": list(self.settings.servers),
+                "reconnect_count": self._bus.reconnect_count if self._bus else 0,
                 "routes": self._pipeline.stats_snapshot() if self._pipeline else {},
                 "watches": len(self._watches._watches) if self._watches else 0,
                 "heartbeat_s": hb,
             }
             if self._last_error:
                 st["last_error"] = self._last_error
+            if self.settings.lifecycle_emit:
+                try:
+                    from .hooks import tap_stats
+                    st["lifecycle"] = tap_stats()
+                except Exception:
+                    pass
             return st
 
         def _write_metrics(self) -> None:
