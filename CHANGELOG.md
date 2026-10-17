@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.0.0 — first stable release (2026-10-17)
+
+Promoted 0.11.0 to stable. Every gate in `docs/V1-READINESS.md` is checked except
+catalog submission, an external distribution step that does not affect the plugin.
+
+- Public API frozen: the six tools (`jetstream_watch` / `jetstream_unwatch` /
+  `jetstream_list` / `jetstream_status` / `nats_publish` / `nats_fetch`), the
+  `wake:` route schema, and the settings keys in `docs/CONFIG-REFERENCE.md`.
+  Breaking changes now require a major version.
+- Auth matrix complete: no-auth, token, nkeys/ncreds, TLS with custom CA, mTLS.
+  Evidence: `tests/auth_matrix.py`, 7 modes + 4 negative refusals.
+- Reliability: at-least-once wakes with an idempotent ledger, storm rails that ack
+  and drop excess, every lost wake recorded (0.11.0), reconnect forensics,
+  durable consumers that rebind and redeliver across node loss (cluster drill).
+- Generality: zero environment assumptions, grep-gated in CI; works against stock
+  single-node and 3-node JetStream; the plugin never creates or mutates streams.
+
 ## 0.11.0 — every lost wake leaves a record (2026-10-16)
 
 The "a probe that errors must never read as clean" doctrine, applied to wakes:
