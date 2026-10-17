@@ -114,7 +114,7 @@ class SubjectMatches(unittest.TestCase):
         q = SubjectPolicy(["hermes.>", "ci.result"])
         self.assertTrue(q.allows("hermes.session.start"))
         self.assertTrue(q.allows("ci.result"))
-        self.assertFalse(q.allows("forgejo.webhook.push"))
+        self.assertFalse(q.allows("other.webhook.push"))
 
     def test_no_wildcard_publish(self):
         with self.assertRaises(ValueError):

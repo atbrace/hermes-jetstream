@@ -1,15 +1,14 @@
-
-# Beads / Dolt files (added by bd init)
-.dolt/
-*.db
-.beads-credential-key
-.beads/proxieddb/
-
 # local/env
 .env
 __pycache__/
 *.pyc
 .venv/
 
-# mirror publish build dir
-.mirror-bundle/
+# internal tracker (cluster dolt; never committed)
+.beads/
+.dolt/
+*.db
+
+# internal working docs
+docs/BATTLE-TEST.md
+docs/V1-READINESS.md

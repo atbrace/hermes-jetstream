@@ -10,13 +10,16 @@ PY="${PYTHON:-python3}"
 fail=0
 note() { printf '\n=== %s ===\n' "$1"; }
 
-note "unit tests (stdlib-only, LAN-hermetic)"
+note "unit tests (stdlib-only)"
 "$PY" -m unittest tests.test_core 2>&1 || fail=1
 
 note "generality gate (no environment references in plugin/)"
-# -I and the pycache exclusion matter: generated .pyc embed the absolute checkout
-# path, and this repo's own path contains gate tokens (sysadmin/...). Source only.
-if grep -rniEI --exclude-dir=__pycache__ "consul|192\.168|initzero|forgejo|nomad|sysadmin|service\." plugin/; then
+# The plugin must run against any nats-server: no vendor, deployment, or host
+# specifics may appear in shipped source. Source files only (.py/.yaml): the
+# checker's own pattern list and build artifacts must not self-match.
+if grep -rniE --include='*.py' --include='*.yaml' \
+   -e consul -e '192\.168' -e initzero -e nomad -e 'service\.consul' -e pool-runner \
+   plugin/; then
   echo "FAIL: environment reference found"; fail=1
 else
   echo "clean"

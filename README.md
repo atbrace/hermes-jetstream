@@ -2,7 +2,7 @@
 
 NATS JetStream plugin for [Hermes Agent](https://hermes-agent.nousresearch.com) — first-class event-bus integration, no core changes.
 
-**Status: release candidate.** Config reference: [`docs/CONFIG-REFERENCE.md`](docs/CONFIG-REFERENCE.md) · Examples: [`examples/`](examples/) · Gate doc: [`docs/V1-READINESS.md`](docs/V1-READINESS.md) · Changelog: [`CHANGELOG.md`](CHANGELOG.md).
+**Status: release candidate.** Config reference: [`docs/CONFIG-REFERENCE.md`](docs/CONFIG-REFERENCE.md) · Examples: [`examples/`](examples/) · Changelog: [`CHANGELOG.md`](CHANGELOG.md).
 
 ## What it does
 

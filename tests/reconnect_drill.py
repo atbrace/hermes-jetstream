@@ -8,9 +8,9 @@ Proves, against the REAL bus the gateway is connected to:
   4. watchability         — the outage window is visible via metrics.last_error /
                             jetstream_status / (with hjs-1xk wired) log lines
 
-Outage mechanism is deployment-specific (Nomad job stop here); the probe halves
-are not. Plan ~2-5 min of real downtime: the restore path is often slower than
-the stop, so budget for it and watch the clock.
+Outage mechanism is deployment-specific (stop the server however you deploy it);
+the probe halves are not. Plan ~2-5 min of real downtime: the restore path is
+often slower than the stop, so budget for it and watch the clock.
 
 Usage:
   python3 tests/reconnect_drill.py capture     # baseline snapshot -> stdout JSON
@@ -19,7 +19,7 @@ Both take --server / --stream. Consumers to check come from --consumers
   stream:consumer,stream:consumer,...
 
 The operator's outage step goes BETWEEN the two invocations, e.g.:
-  nomad job stop nats ; <restore via your deploy path> ; <verify>
+  <bounce your nats-server via your deploy path> ; <verify>
 """
 import argparse
 import asyncio
@@ -27,8 +27,6 @@ import dataclasses
 import json
 import sys
 import time
-
-sys.path.insert(0, "/home/claude/.hermes/cache/uv/archive-v0/fJRwH6VM52VFdXpO")  # nats-py
 
 
 async def snapshot(server: str, stream: str, consumers: list) -> dict:
@@ -80,8 +78,8 @@ def verdict(before: dict, after: dict) -> bool:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("mode", choices=["capture", "verify"])
-    ap.add_argument("--server", default="nats://nats.service.consul:4222")
-    ap.add_argument("--stream", default="forgejo")
+    ap.add_argument("--server", default="nats://localhost:4222")
+    ap.add_argument("--stream", default="hermes")
     ap.add_argument("--consumers", required=True)
     ap.add_argument("--compare", help="path to capture JSON (verify mode)")
     args = ap.parse_args()

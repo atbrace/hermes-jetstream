@@ -54,8 +54,7 @@ via the API.
 
 ## Watchability (no external monitoring required)
 
-Three plugin-owned surfaces answer "is my watch alive?" (see `docs/BATTLE-TEST.md` for
-why they exist):
+Three plugin-owned surfaces answer "is my watch alive?":
 
 1. **`jetstream_status` tool** — per-route counters (`dispatched`/`shed`/`coalesced`/
    `skipped_*`/`failed`/`lost`), `attempted`, last-attempt and last-dispatch clocks,
@@ -82,7 +81,7 @@ the watchdog must be separate from the thing it watches.
 
 `scripts/ci.sh` IS the gate: unit tests, the generality grep-gate, syntax, and doctor.
 `.github/workflows/ci.yml` adds the live jobs (smoke, auth matrix, cluster drill, silence
-drill) on top by booting its own scratch nats-server. A Forgejo/GitHub instance with no
+drill) on top by booting its own scratch nats-server. A forge with no
 runner still gates honestly: run `./scripts/ci.sh` before merging — it is byte-for-byte
 the same hermetic check the `CI / core` context runs, and `NATS_BIN=/path/to/nats-server
 ./scripts/ci.sh` reproduces the `CI / live` additions. No behavior lives only in YAML.

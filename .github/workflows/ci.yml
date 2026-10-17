@@ -1,40 +1,27 @@
 name: CI
-# Community-repo gate. Forgejo Actions: runs-on targets the estate CI lane (`pool-runner`).
-# This instance registers no ubuntu-latest runner — jobs asking for it queue forever —
-# so a fork moving to GitHub-hosted flips every runs-on back to ubuntu-latest, one line each.
-# The live job boots its own nats-server binary (no docker service container), then runs
-# smoke + auth matrix + cluster drill as one sequence on it.
-# Forgejo instances without runners: run scripts/ci.sh locally — it's the same hermetic gate.
+# Public-repo gate. core = hermetic scripts/ci.sh (unit tests, syntax, plugin doctor).
+# live = a scratch nats-server with JetStream, then smoke + auth matrix + cluster drill.
+# No hosted runner? scripts/ci.sh is byte-for-byte the same hermetic gate, and
+# NATS_BIN=/path/to/nats-server ./scripts/ci.sh reproduces the live additions.
 on:
   push: { branches: [main] }
   pull_request:
 
 jobs:
   core:
-    # One lane on purpose: the runner container is Debian bookworm with a single
-    # system python3 (3.11), and setup-python can't fetch its versions manifest from
-    # inside the lane. A GitHub-hosted fork restores the matrix + setup-python here.
-    runs-on: pool-runner
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: bootstrap pip and deps (lane container python3 ships without pip)
-        run: |
-          set -euo pipefail
-          python3 -m ensurepip --upgrade 2>/dev/null || { apt-get update -qq && apt-get install -y -qq python3-pip; }
-          python3 -m pip install --user --break-system-packages --quiet 'nats-py>=2.7,<3' nkeys
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: install deps
+        run: python3 -m pip install --user --quiet 'nats-py>=2.7,<3' nkeys
       - run: ./scripts/ci.sh
 
   live:
-    runs-on: pool-runner
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: bootstrap pip and deps
-        run: |
-          set -euo pipefail
-          python3 -m ensurepip --upgrade 2>/dev/null || { apt-get update -qq && apt-get install -y -qq python3-pip; }
-          python3 -m pip install --user --break-system-packages --quiet 'nats-py>=2.7,<3' nkeys
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: install deps
+        run: python3 -m pip install --user --quiet 'nats-py>=2.7,<3' nkeys
       - name: install nats-server
         run: |
           v=2.11.8

@@ -32,8 +32,7 @@ publish allowlist) so a plain `nats watch` is a complete dead-man. No external
 monitoring required — the plugin's job is to be watchable; alerting stays the
 operator's.
 
-Found and fixed by the same day's live campaign on a production bus
-(docs/BATTLE-TEST.md): `bus.loop` was always None (nats-py stores no `_loop`),
+Found and fixed by the first live campaign on a real production bus: `bus.loop` was always None (nats-py stores no `_loop`),
 which had silently disabled the lifecycle tap and forced every tool call onto the
 ephemeral connect path; wake sessions now authorize per-platform via
 `JETSTREAM_ALLOWED_USERS` instead of default-denying to the global allowlist;
