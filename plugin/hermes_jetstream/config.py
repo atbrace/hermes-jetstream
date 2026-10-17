@@ -2,8 +2,8 @@
 
 Resolution order: plugin.yaml config_schema defaults < plugins.entries.hermes-jetstream.settings
 (ctx.get_config) < platforms.jetstream.extra (adapter overlay). Secrets (token, creds paths, CA
-paths) live in .env expansion: any string value containing ``${VAR}`` is expanded from
-``os.environ`` at load, so credentials stay in Hermes' .env, never in config.yaml.
+paths) live in ${VAR} config references, resolved through Hermes' profile-scoped secret scope
+(agent.secret_scope.get_secret) at load, so credentials stay in Hermes' .env, never in config.yaml.
 """
 from __future__ import annotations
 
@@ -21,6 +21,17 @@ DEFAULT_STREAM = "hermes"
 DEFAULT_MAX_PAYLOAD = 32768  # client cap; server max_payload (1MiB default) still applies
 
 
+def _secret(name: str) -> str:
+    """Profile-scoped secret read (catalog rule 11). Falls back to os.environ only
+    when the agent package is unimportable, i.e. outside Hermes (stdlib unit tests)."""
+    try:
+        from agent.secret_scope import get_secret
+    except ImportError:
+        return os.environ.get(name, "")
+    val = get_secret(name)
+    return "" if val is None else val
+
+
 def _expand(value: Any) -> Any:
     """Expand ${VAR} in strings (secrets live in .env; config.yaml holds the reference).
     A missing var expands empty (fail-open on value) but names itself in the log —
@@ -28,10 +39,11 @@ def _expand(value: Any) -> Any:
     if isinstance(value, str):
         def _sub(m):
             name = m.group(1)
-            if name not in os.environ:
+            val = _secret(name)
+            if not val:
                 logging.getLogger("hermes_jetstream.config").warning(
                     "[jetstream] config references ${%s} but it is not set — expanded empty", name)
-            return os.environ.get(name, "")
+            return val
         return _ENV_RE.sub(_sub, value)
     if isinstance(value, dict):
         return {k: _expand(v) for k, v in value.items()}
