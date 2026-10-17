@@ -27,6 +27,19 @@ _TAPS = {
 }
 
 _QUEUE_CAP = 256
+_ACTIVE_TAPS: list = []
+_TAPS_LOCK = threading.Lock()
+
+
+def tap_stats() -> Dict[str, int]:
+    """Summed counters across every LifecycleTap in this process (hjs-azz)."""
+    with _TAPS_LOCK:
+        taps = list(_ACTIVE_TAPS)
+    out: Dict[str, int] = {}
+    for t in taps:
+        for k, v in t.stats().items():
+            out[k] = out.get(k, 0) + v
+    return out
 
 
 def pick_fields(kind: str, kwargs: Dict[str, Any]) -> Dict[str, Any]:
@@ -44,6 +57,12 @@ class LifecycleTap:
         self.q: "queue.Queue[tuple[str, bytes]]" = queue.Queue(maxsize=_QUEUE_CAP)
         self._stop = threading.Event()
         self._worker: Optional[threading.Thread] = None
+        # hjs-azz: a fire-and-forget tap that silently drops is the same lie as an
+        # erroring probe reading clean — every emit decision is counted.
+        self._c_lock = threading.Lock()
+        self._c = {"emitted": 0, "dropped": 0, "published": 0, "failed": 0}
+        with _TAPS_LOCK:
+            _ACTIVE_TAPS.append(self)
 
     def start(self) -> None:
         if self._worker is not None:
@@ -54,6 +73,14 @@ class LifecycleTap:
     def stop(self) -> None:
         self._stop.set()
 
+    def stats(self) -> Dict[str, int]:
+        with self._c_lock:
+            return dict(self._c)
+
+    def _count(self, name: str) -> None:
+        with self._c_lock:
+            self._c[name] += 1
+
     def _emit(self, kind: str):
         def _handler(**kwargs):
             try:
@@ -61,9 +88,16 @@ class LifecycleTap:
                 body = json.dumps(build_envelope(kind, data, profile=self.profile,
                                                  source="lifecycle-tap"), default=str).encode()
                 if len(body) > self.settings.max_payload_bytes:
+                    self._count("dropped")
                     return
                 self.q.put_nowait((f"{self.prefix}.{kind}", body))  # drops when bus is behind
+                self._count("emitted")
+            except queue.Full:
+                self._count("dropped")
+                logger.warning("[jetstream] lifecycle tap queue full (cap %d) — dropped %s",
+                               _QUEUE_CAP, kind)
             except Exception:
+                self._count("dropped")
                 logger.debug("[jetstream] lifecycle tap drop kind=%s", kind, exc_info=True)
         return _handler
 
@@ -76,15 +110,16 @@ class LifecycleTap:
                 continue
             try:
                 bus = self.get_bus()
-                if bus is None:
-                    continue  # no bus in this process: lifecycle events stay in-process
-                loop = bus.loop
-                if loop is not None:
-                    import asyncio as _a
-                    fut = _a.run_coroutine_threadsafe(bus.publish(subject, body), loop)
-                    fut.result(timeout=5)
+                if bus is None or bus.loop is None:
+                    self._count("failed")
+                    continue  # no connected bus in this process: events stay in-process
+                import asyncio as _a
+                fut = _a.run_coroutine_threadsafe(bus.publish(subject, body), bus.loop)
+                fut.result(timeout=5)
+                self._count("published")
             except Exception:
-                logger.debug("[jetstream] lifecycle publish dropped subject=%s", subject)
+                self._count("failed")
+                logger.warning("[jetstream] lifecycle publish FAILED subject=%s", subject)
 
 
 def register_hooks(ctx, settings, profile_name: str, get_bus) -> None:
