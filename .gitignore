@@ -10,3 +10,6 @@
 __pycache__/
 *.pyc
 .venv/
+
+# mirror publish build dir
+.mirror-bundle/
