@@ -6,10 +6,18 @@ propagate into the gateway event loop (a plugin crash takes the gateway's whole 
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
+import time
 from typing import Any, Callable, Coroutine, Dict, List, Optional
 
 logger = logging.getLogger("hermes_jetstream.bus")
+
+
+async def _maybe_await(fn) -> None:
+    r = fn()
+    if inspect.isawaitable(r):
+        await r
 
 try:
     import nats
@@ -35,6 +43,27 @@ class NatsBus:
         self._disconnected_cb = disconnected_cb
         self._reconnected_cb = reconnected_cb
         self._error_cb_user = error_cb
+        # hjs-2qk: incident forensics need a log trail, not just a live state surface.
+        self._down_since: Optional[float] = None
+        self.reconnect_count = 0
+
+    async def _on_disconnected(self) -> None:
+        # nats-py fires this on intentional close() too — only the unplanned kind
+        # is an incident worth a WARNING (stop() sets _closing first).
+        if not self._closing:
+            self._down_since = time.monotonic()
+            logger.warning("[jetstream] disconnected from %s", self.settings.servers)
+        if self._disconnected_cb is not None:
+            await _maybe_await(self._disconnected_cb)
+
+    async def _on_reconnected(self) -> None:
+        self.reconnect_count += 1
+        down = time.monotonic() - self._down_since if self._down_since else 0.0
+        self._down_since = None
+        logger.info("[jetstream] reconnected (after %.1fs down, reconnect_count=%d)",
+                    down, self.reconnect_count)
+        if self._reconnected_cb is not None:
+            await _maybe_await(self._reconnected_cb)
 
     async def _error_cb(self, exc) -> None:
         logger.warning("[jetstream] client error: %s", exc)
@@ -77,14 +106,12 @@ class NatsBus:
             connect_timeout=self.settings.connect_timeout_s,
             no_echo=True,  # same-connection loop guard (cross-connection guard = nonce ledger)
             error_cb=self._error_cb,  # logger, never nats-py's stderr default
+            disconnected_cb=self._on_disconnected,  # logs + counts (hjs-2qk)
+            reconnected_cb=self._on_reconnected,
         )
         kwargs.update(self.settings.auth_kwargs())
         if self.settings.tls_enabled:
             kwargs["tls"] = self.settings.tls_kwargs()["tls"]
-        if self._disconnected_cb:
-            kwargs["disconnected_cb"] = self._disconnected_cb
-        if self._reconnected_cb:
-            kwargs["reconnected_cb"] = self._reconnected_cb
         # NATS() + nc.connect() (not module-level connect) so the instance is
         # reachable to close() when connect raises: nats-py spawns its reconnect
         # task BEFORE auth/TLS failures surface, and a refused client that is
