@@ -34,6 +34,18 @@ All keys live under `plugins.entries.hermes-jetstream.settings` (platform config
 | `heartbeat_s` | int | `0` | Opt-in liveness heartbeat: publish a status snapshot every N seconds. `0` = off. Requires `heartbeat_subject`; disabled with a warning if the subject isn't publish-allowlisted (fail closed). |
 | `heartbeat_subject` | str | `""` | Subject for heartbeat publishes (e.g. `hermes.heartbeat`). Add it to `publish_allowed`. |
 
+## Publish dedupe — per-stream, not per-subject
+
+JetStream dedupes `Nats-Msg-Id` across the **whole stream**, not per subject:
+two publishes carrying the same msg-id on different subjects bound to one
+stream are treated as duplicates and the server **silently drops the second**
+(ack reports `duplicate=True`, the event never lands). The plugin therefore
+salts its msg-id with the subject (`_msg_id = sha256(subject + NUL + body)`),
+so identical payloads on different subjects can never collide, while an
+in-subject republish of the same envelope still dedupes as intended. If you
+publish to the plugin's stream yourself with your own `Nats-Msg-Id`, salt it
+by subject too.
+
 ## Auth
 
 Wake sessions are authorized through the standard gateway allowlist. Set
