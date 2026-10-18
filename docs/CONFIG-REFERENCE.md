@@ -87,6 +87,8 @@ Registration caps at 16 routes; re-registering an existing name updates it.
 From a CLI/cron process (no live adapter) the row persists and binds at the next
 platform start. `jetstream_watch` remains the right tool for ephemeral,
 session-scoped interest; this verb is for durable consumers an agent owns.
+Choosing among the listening surfaces and copy-paste recipes:
+[AGENT-USAGE-GUIDE.md](AGENT-USAGE-GUIDE.md).
 
 ## Auth
 
@@ -97,14 +99,16 @@ Wake sessions are authorized through the standard gateway allowlist. Set
 
 ### `nats_fetch` resume semantics
 
-`nats_fetch` reads the subject from its tail on the first call per process
-(history is what `wake` routes and watches deliver; fetch is for what happens
-next). Within the same gateway process, later calls resume after the last
-returned message, so successive fetches never re-deliver what they already
-returned. The cursor is in-process only: a gateway restart resets it to
-tail-once, and other processes keep their own cursors. For exactly-once across
-restarts, use a wake route (durable consumer) or pass your own durable consumer
-via the API.
+The first `nats_fetch` call per process starts at the **oldest event the stream
+still retains** on the subject — the ephemeral pull consumer defaults to
+`DeliverPolicy.ALL` (verified against nats-py 2.16.0; earlier text here said
+"tail", which the code never did). Within the same gateway process, later calls
+resume after the last returned message, so successive fetches never re-deliver
+what they already returned — repeat calls to exhaustion are a backlog replay.
+The cursor is in-process only: a gateway restart resets it to oldest-retained,
+and other processes keep their own cursors. For exactly-once across restarts,
+use a wake route (durable consumer) or pass your own durable consumer via the
+API.
 
 ## Watchability (no external monitoring required)
 

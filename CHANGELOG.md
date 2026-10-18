@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **`docs/AGENT-USAGE-GUIDE.md`**: the agent-facing listening guide — decision table over the five surfaces (config wake routes, `jetstream_wake` runtime routes, `jetstream_watch`, `nats_fetch`, publish+fetch handoff), subject discovery (`jetstream_status` first; jsz is aggregates-only), copy-paste recipes (register/unregister-with-teardown/watch-with-TTL/backlog replay), the twin-trigger law (`max_age_s` self-retire + server-held durable backlog with its shed/redeliver-budget limits), and gotchas. Fixes the CONFIG-REFERENCE `nats_fetch` first-call claim: the ephemeral consumer starts at oldest-retained (`DeliverPolicy.ALL`), not tail. (`docs` hjs-rwl)
+
 ## 1.2.0 (2026-10-18)
 
 - **Runtime wake routes (`jetstream_wake`)**: register/unregister/list DURABLE wake routes at runtime — no config edit, no gateway restart. Rows persist in the plugin data dir (`wake-routes.json`), rebind at every platform bind, and carry the full config-route gate set: `subscribe_allowed` match required (loud refusal at register), same prompt/rate rails, `rt-`-namespaced names that can't collide with config routes. Unregister is idempotent; optional `max_age_s` self-retires abandoned routes at bind; `jetstream_status` shows runtime rows with `source: "runtime"` (config rows now `source: "config"`). See CONFIG-REFERENCE "Runtime wake routes". (`feat(wake)` hjs-tr9)
