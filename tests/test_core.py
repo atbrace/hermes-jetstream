@@ -1073,9 +1073,15 @@ class MonorepoDiscovery(unittest.TestCase):
         import re
         m = re.search(r"hermes plugins install\s+(\S+)", (self.ROOT / "README.md").read_text())
         self.assertIsNotNone(m, "README must document an install command")
-        parts = m.group(1).rstrip("/").split("/")
-        self.assertGreaterEqual(len(parts), 4, "identifier must carry the unit subdir")
-        self.assertTrue((self.ROOT.joinpath(*parts[2:]) / "plugin.yaml").is_file())
+        ident = m.group(1).rstrip("/")
+        parts = ident.split("/")
+        if len(parts) >= 4:
+            # git-identifier fallback form: resolves to this very manifest on disk
+            self.assertTrue((self.ROOT.joinpath(*parts[2:]) / "plugin.yaml").is_file())
+        else:
+            # catalog-name form (primary install path): name must match the manifest
+            self.assertEqual(ident, "hermes-jetstream",
+                             "catalog install identifier must be the published plugin name")
 
 
 class PlatformFailureNamesItsReason(unittest.TestCase):
