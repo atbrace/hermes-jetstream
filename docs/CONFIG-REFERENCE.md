@@ -10,7 +10,7 @@ All keys live under `plugins.entries.hermes-jetstream.settings` (platform config
 | `stream` | str | `hermes` | JetStream stream the wake consumers and `nats_fetch` bind. **The plugin never creates or mutates it — it must exist and bind your subjects.** |
 | `publish_allowed` | list | `[]` | Subject patterns `nats_publish` may target. Empty = publishing DENIED (fail closed). No wildcards in publish targets themselves. |
 | `subscribe_allowed` | list | `[]` | Gates wake routes, `nats_fetch`, and `jetstream_watch` patterns. |
-| `wake` | list | `[]` | Wake routes (below). |
+| `wake` | list | `[]` | Wake routes (below). Item schema: [`wake-routes.schema.json`](wake-routes.schema.json). Dry-run your whole settings block before the restart gate: `python3 scripts/validate_settings.py settings.json` (exit 1 names every problem; see Validating before restart). |
 | `wake[].name` | str | required | Route identity (also bucket/coalesce key). |
 | `wake[].subject` | str | required | Literal or wildcard; must match `subscribe_allowed`. |
 | `wake[].durable` | str | `jetstream-<name>` | Durable consumer **and** queue group name (NATS requires equality for queue subs). Same value across gateways = one shared queue group. |
@@ -45,6 +45,26 @@ so identical payloads on different subjects can never collide, while an
 in-subject republish of the same envelope still dedupes as intended. If you
 publish to the plugin's stream yourself with your own `Nats-Msg-Id`, salt it
 by subject too.
+=======
+## Validating before restart
+
+A typo'd wake route otherwise costs a full restart cycle to discover: the
+gateway logs `adapter construction refused (bad config?)` and the platform
+stays down. Check the block first, no NATS connection involved:
+
+```bash
+python3 scripts/validate_settings.py settings.json   # the JSON under plugins.entries.hermes-jetstream.settings
+```
+
+Exit 0 = the loader accepts the block; exit 1 prints one `ERROR:` line per
+problem naming its path (`wake[0] ...`, `heartbeat_subject ...`). It reuses
+the plugin's own `Settings.from_plugin_ctx`/`WakeRoute.from_dict` — no second
+parser — and additionally catches the silent-runtime-failure shapes the
+parser can't see: duplicate route names, a route subject matching no
+`subscribe_allowed` pattern (wakes would ack-and-drop), a heartbeat subject
+missing from `publish_allowed`. `docs/wake-routes.schema.json` mirrors the
+route item shape for editor validation; the parser in `config.py` remains the
+source of truth.
 
 ## Auth
 

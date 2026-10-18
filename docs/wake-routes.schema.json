@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/07/schema#",
+  "$id": "https://github.com/atbrace/hermes-jetstream/blob/main/docs/wake-routes.schema.json",
+  "title": "hermes-jetstream wake route",
+  "description": "One entry of plugins.entries.hermes-jetstream.settings.wake (or platforms.jetstream.extra.wake). Hand-written mirror of WakeRoute.from_dict in plugin/hermes_jetstream/config.py — that parser is the source of truth; regenerate this file whenever it changes. Validate a settings block before the restart gate with: python3 scripts/validate_settings.py settings.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "subject"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Route identity (also the rate/coalesce bucket key and the jetstream:<route> allowlist entry)."
+    },
+    "subject": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Literal or wildcard subject; must match a subscribe_allowed pattern or wakes are silently acked and dropped at runtime."
+    },
+    "durable": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:-]+$",
+      "default": "jetstream-<name>",
+      "description": "Durable consumer AND queue-group name. Parser rejects '*', '>' and whitespace (NATS consumer-name rules) at load, not at connect."
+    },
+    "prompt": {
+      "type": "string",
+      "default": "JetStream event on {subject}. Payload: {payload}",
+      "description": "Template; single-brace {subject} {payload} {seq} {ts} only — never raw payload concat."
+    },
+    "max_payload_chars": {
+      "type": "integer",
+      "minimum": 64,
+      "default": 2000,
+      "description": "Payload truncation into the prompt; the parser clamps below 64 up to 64."
+    },
+    "rate_per_min": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 10,
+      "description": "Per-route token bucket; excess is acked and dropped (shed). Parser clamps below 1 up to 1."
+    },
+    "min_interval_s": {
+      "type": "number",
+      "minimum": 0,
+      "default": 0,
+      "description": "Coalescing: events closer than this are acked and dropped. Parser clamps negatives to 0."
+    },
+    "job": {
+      "type": "string",
+      "default": "",
+      "description": "Cron job id/name: route becomes an EVENT JOB (fires the job via the execute_job_for_event rail) instead of waking a session."
+    },
+    "profile": {
+      "type": "string",
+      "default": "",
+      "description": "Profile owning the cron job (event jobs only)."
+    }
+  }
+}
