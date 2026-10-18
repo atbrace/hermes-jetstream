@@ -45,7 +45,6 @@ so identical payloads on different subjects can never collide, while an
 in-subject republish of the same envelope still dedupes as intended. If you
 publish to the plugin's stream yourself with your own `Nats-Msg-Id`, salt it
 by subject too.
-=======
 ## Validating before restart
 
 A typo'd wake route otherwise costs a full restart cycle to discover: the
@@ -171,7 +170,6 @@ order by claimed_at desc limit 10"`), so a stream seq from `consumer info` maps 
 to a `claimed`/`done` wake. Seq present in the stream but no row → the consumer never
 delivered it; `done` row + no session wake → check `jetstream_status` counters.
 Full runnable version: [examples/nats-box-receipts.md](../examples/nats-box-receipts.md).
-=======
 ## nats-py version traps (verified against the pin, nats-py 2.16.0)
 
 The plugin declares `nats-py>=2.7,<3` (`plugin.yaml`). Signatures below were

@@ -9,7 +9,7 @@ assumes any particular infrastructure.
 
 | Want | Use | Lifetime | Where state lives |
 |---|---|---|---|
-| Wake me (or fire a cron job) on this subject, forever, config-managed | `wake:` route in settings | until config edit | gateway config; durable consumer |
+| Wake me — or fire a cron job (an **event job**: set the route's `job:` field, config-only; `jetstream_wake` has no `job` arg) — on this subject, forever, config-managed | `wake:` route in settings | until config edit | gateway config; durable consumer |
 | Wake me on this subject, but it's *my task's* route, not the operator's | `jetstream_wake(action="register", …)` | until you unregister, or `max_age_s` self-retire | plugin data dir (`wake-routes.json`); durable consumer |
 | Inject matching events into **this session** while I work | `jetstream_watch(subject, note)` | TTL (default 3600 s, max 21600 s), ≤16 watches, dies with the gateway | in-process only |
 | Read what happened (backlog / last N / one bounded wait) | `nats_fetch(subject, timeout_seconds≤300, batch≤10)` | per call, with an in-process resume cursor | server-held pull, no durable state |
@@ -68,17 +68,19 @@ jetstream_wake(action="unregister", name="deploy-approve")   # also accepts rt-d
 as turns, no polling:
 
 ```python
-wid = jetstream_watch("ops.myco.build.#", note="waiting on my build", ttl_seconds=1800, max_msgs=1)
+wid = jetstream_watch("ops.myco.build.finished", note="waiting on my build", ttl_seconds=1800, max_msgs=1)
+# (subject may be literal, `*` per token, or trailing `>` — NATS has no `#`)
 # … on teardown: jetstream_unwatch(watch_id=wid)
 ```
 
 **Replay the backlog after downtime:** call `nats_fetch(subject, batch=10,
-timeout_seconds=10)` repeatedly until it returns "No messages". The first fetch
-in a process starts at the **oldest event the stream still retains**
-(measured: the ephemeral consumer defaults to `DeliverPolicy.ALL`), and each
-call resumes after the last seq it returned — so successive fetches walk
-forward without re-delivering. The cursor is in-process only: a restart resets
-it. For exactly-once across restarts, use a durable wake route instead.
+timeout_seconds=10)` repeatedly until it returns "No messages" (batch caps at 10,
+so a deep backlog is a loop). The first fetch in a process starts at the
+**oldest event the stream still retains** (the ephemeral consumer defaults to
+`DeliverPolicy.ALL`), and each call resumes after the last seq it returned — so
+successive fetches walk forward without re-delivering. The cursor is in-process
+only: a restart resets it to the same oldest-retained walk. For exactly-once
+across restarts, use a durable wake route instead.
 
 ## The twin-trigger law
 
