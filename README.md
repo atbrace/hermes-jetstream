@@ -85,6 +85,7 @@ One adapter per profile that enables the platform. Each profile's `settings` (se
 
 ```bash
 python -m unittest tests.test_core        # stdlib-only, no network
+python3 scripts/validate_settings.py settings.json   # dry-run your settings block before restarting the gateway
 HJS_SMOKE_SERVERS=localhost:4222 python tests/smoke_live.py   # live drill, self-cleaning
 ```
 

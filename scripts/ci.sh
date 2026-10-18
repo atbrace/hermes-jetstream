@@ -11,7 +11,7 @@ fail=0
 note() { printf '\n=== %s ===\n' "$1"; }
 
 note "unit tests (stdlib-only)"
-"$PY" -m unittest tests.test_core 2>&1 || fail=1
+"$PY" -m unittest tests.test_core tests.test_validate 2>&1 || fail=1
 
 note "generality gate (no environment references in plugin/)"
 # The plugin must run against any nats-server: no vendor, deployment, or host
