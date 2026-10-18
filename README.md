@@ -29,10 +29,10 @@ Together these make the agent an ordinary citizen of your event flow. Anything o
 ## Install
 
 ```bash
-hermes plugins install atbrace/hermes-jetstream/plugin/hermes_jetstream
+hermes plugins install hermes-jetstream
 ```
 
-The identifier must end at the unit directory `plugin/hermes_jetstream`, not the repo: a bare-repo install publishes the monorepo root as the plugin directory, burying `plugin.yaml` below discovery's depth cap — the manifest goes invisible, its `python_dependencies` unprocessed, and the platform fails at creation with a missing-deps warning (hjs-c03). If nats-py is still missing afterwards, `pip install "nats-py>=2.7,<3"` into the gateway venv.
+This resolves the curated catalog entry, which points at the unit directory and installs the pinned release. To install an exact commit instead (pre-pin fixes, --ref): `hermes plugins install atbrace/hermes-jetstream/plugin/hermes_jetstream` — the identifier must end at the unit directory `plugin/hermes_jetstream`, not the repo: a bare-repo install buries `plugin.yaml` below discovery's depth cap and the platform fails at creation with a missing-deps warning (hjs-c03). If nats-py is still missing afterwards, `pip install "nats-py>=2.7,<3"` into the gateway venv.
 
 ## Quickstart
 
