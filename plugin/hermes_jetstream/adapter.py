@@ -18,6 +18,7 @@ from .envelope import GATEWAY_NONCE
 from .ledger import WakeLedger
 from .wake import WakePipeline
 from .watch import WatchRegistry
+from .runtime_routes import RuntimeRouteStore, STORE_FILENAME, tag_sources
 from .subject import SubjectPolicy, matches_any
 
 logger = logging.getLogger("hermes_jetstream.adapter")
@@ -72,14 +73,23 @@ def _build_class():
             self._watches: Optional[WatchRegistry] = None
             self._last_error: Optional[Dict[str, Any]] = None
             self._hb_last: float = 0.0
+            self._runtime_subs: Dict[str, Any] = {}   # hjs-tr9: name -> live sub (drain on unregister)
+            self._runtime_names: set = set()           # bound runtime route names (status source tag)
 
         async def connect(self, *, is_reconnect: bool = False) -> bool:
             if self._bus is not None and self._bus.connected:
                 return True
-            routes = [r for r in self.settings.wake
+            # hjs-tr9: runtime routes (jetstream_wake) join config routes at bind —
+            # expired rows self-retire first, and the merged list passes the SAME
+            # subscribe_allowed filter below, so a runtime route is never privileged.
+            runtime_routes = self._load_runtime_routes()
+            runtime_names = {r.name for r in runtime_routes}
+            merged = list(self.settings.wake) + runtime_routes
+            routes = [r for r in merged
                       if r.subject in self.settings.subscribe_allowed
                       or matches_any(r.subject, self.settings.subscribe_allowed)]
-            dropped = len(self.settings.wake) - len(routes)
+            dropped = len(merged) - len(routes)
+            self._runtime_names = {r.name for r in routes} & runtime_names
             if dropped:
                 logger.warning("[jetstream] %d wake route(s) outside subscribe_allowed — ignored", dropped)
             if not routes:
@@ -107,9 +117,11 @@ def _build_class():
             try:
                 await self._bus.connect()
                 for r in routes:
-                    await self._bus.subscribe_wake(
+                    sub = await self._bus.subscribe_wake(
                         subject=r.subject, queue=r.durable,  # queue name == durable consumer name
                         on_message=lambda msg, route=r: self._pipeline.handle_message(msg, route))
+                    if r.name in self._runtime_names:
+                        self._runtime_subs[r.name] = sub
                 self._seed_route_stats(routes)
                 self._sweep_task = asyncio.create_task(self._sweep_loop())
             except Exception:
@@ -151,6 +163,42 @@ def _build_class():
             for r in routes:
                 self._pipeline._stat(r.name, "seed", 0.0, attempted=False)
 
+        def _load_runtime_routes(self):
+            """hjs-tr9: load jetstream_wake routes for bind — max_age sweep first
+            (abandoned agent routes self-retire), junk rows named loudly, nothing silent."""
+            store = RuntimeRouteStore(_plugin_data_dir() / STORE_FILENAME)
+            for n in store.sweep():
+                logger.info("[jetstream] runtime wake route %s past max_age — self-retired", n)
+            routes, problems = store.wake_routes()
+            for n, why in problems:
+                logger.warning("[jetstream] runtime wake route %s skipped: %s", n, why)
+            return routes
+
+        async def add_runtime_route(self, route) -> None:
+            """Live-bind a freshly registered runtime route (no gateway restart).
+            Runs on the bus loop (tools hop via _on_bus_loop)."""
+            if self._bus is None or self._pipeline is None or not self._bus.connected:
+                raise RuntimeError("platform not connected")
+            sub = await self._bus.subscribe_wake(
+                subject=route.subject, queue=route.durable,
+                on_message=lambda msg: self._pipeline.handle_message(msg, route))
+            self._runtime_subs[route.name] = sub
+            self._runtime_names.add(route.name)
+            self._pipeline._stat(route.name, "seed", 0.0, attempted=False)
+
+        async def remove_runtime_route(self, name: str) -> None:
+            self._runtime_names.discard(name)
+            sub = self._runtime_subs.pop(name, None)
+            if sub is None:
+                return  # idempotent: never bound here (or already gone)
+            try:
+                await sub.drain()
+            except Exception:
+                try:
+                    await sub.unsubscribe()
+                except Exception:
+                    pass
+
         def _note_error(self, exc) -> None:
             self._last_error = {"ts": time.time(), "msg": str(exc)[:200]}
 
@@ -163,7 +211,8 @@ def _build_class():
                 "stream": self.settings.stream,
                 "servers": list(self.settings.servers),
                 "reconnect_count": self._bus.reconnect_count if self._bus else 0,
-                "routes": self._pipeline.stats_snapshot() if self._pipeline else {},
+                "routes": (tag_sources(self._pipeline.stats_snapshot(),
+                                       self._runtime_names) if self._pipeline else {}),
                 "watches": len(self._watches._watches) if self._watches else 0,
                 "heartbeat_s": hb,
             }
@@ -305,6 +354,7 @@ def _build_class():
             if self._bus:
                 await self._bus.stop()
                 self._bus = None
+            self._runtime_subs.clear()  # bus.stop drained everything; handles are stale
             with _ACTIVE_LOCK:
                 _ACTIVE.discard(self)
             self._mark_disconnected()
@@ -364,6 +414,12 @@ def active_buses():
 def active_watch_registries():
     with _ACTIVE_LOCK:
         return [a._watches for a in _ACTIVE if getattr(a, "_watches", None) is not None]
+
+
+def active_adapters():
+    """Live adapters (hjs-tr9: jetstream_wake live rebind reaches add/remove_runtime_route)."""
+    with _ACTIVE_LOCK:
+        return list(_ACTIVE)
 
 
 def active_status():

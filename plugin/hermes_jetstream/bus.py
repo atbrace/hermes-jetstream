@@ -137,7 +137,7 @@ class NatsBus:
         return await self._js.publish(subject, payload, timeout=5.0, headers=headers or None)
 
     async def subscribe_wake(self, *, subject: str, queue: str,
-                             on_message: Callable[[Any], Coroutine]) -> None:
+                             on_message: Callable[[Any], Coroutine]) -> Any:
         """Durable push consumer, manual ack: at-least-once with explicit ack discipline.
         nats-py law: for a queue sub the QUEUE NAME is the durable consumer name (single
         identity for deliver_group/durable/queue) — 'queue' below is that identity.
@@ -161,6 +161,7 @@ class NatsBus:
             ),
         )
         self._subs.append(sub)
+        return sub  # hjs-tr9: runtime unregister needs the handle (drain on demand)
 
     async def fetch(self, subject: str, *, timeout: float = 30.0, batch: int = 1,
                     config=None) -> List[Any]:
