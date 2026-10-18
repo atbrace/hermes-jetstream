@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.1.0 — pilot-hardened (2026-10-18)
+
+Six fixes from the haus-estate pilot, each reproduced, adversarially reviewed, and merged with green CI:
+
+- **Dedupe is now subject-safe**: `Nats-Msg-Id` is salted with the subject hash, so two events on different subjects can no longer silently collide on one stream (the old unsalted path dropped the second publish). Same-subject republish dedupe unchanged. (`fix(dedupe)` e42ea6d)
+- **Platform creation failures are loud**: a missing-requirements refusal now prints an install hint naming the remedy and the unit-subdir install identifier; README gained the Install section it was missing. Core monorepo discovery remains the out-of-scope remainder (evidence in `docs/pilot/hjs-c03.md`). (`fix(platform-registration)` f2c3efc)
+- **Pre-restart validation**: `scripts/validate_settings.py` dry-runs the settings block through the real loader and exits nonzero naming every offending key — schema typos die before the restart gate, not after. Ships with `docs/wake-routes.schema.json`. (`feat(validate)` cbff687)
+- **Receipt inspection without a nats CLI**: CONFIG-REFERENCE + `examples/nats-box-receipts.md` give a nats-box sidecar and copy-paste recipes against the plugin's real stream/consumer names. (`docs(receipts)` d096678)
+- **Capabilities disclosure**: README clarifies `plugins capabilities` is the consent-gate surface; the six jetstream tools show under `hermes tools list`. (`docs(caps)` 9bdae20)
+- **nats-py traps documented**: measured `get_msg`/`RawStreamMsg` signatures for the supported range, plus a flagged `ConsumerConfig.backoff` effective-floor defect (needs >=2.8 though the pin says >=2.7). (`docs(nats-py)` f1ddb67)
+
+Public API, config keys, and wire behavior unchanged; dedupe header format changes on the wire (msg-ids become subject-salted) — a bug-compatible external publisher relying on cross-subject unsalted ids would see behavior change (none known).
+
+
 ## 1.0.1 — profile-scoped secret reads (2026-10-17)
 
 Catalog admission rule 11: `${VAR}` secret expansion in plugin settings now
