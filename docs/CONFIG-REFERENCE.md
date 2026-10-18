@@ -77,6 +77,43 @@ Wire whatever dead-man you already run to whichever surface is cheapest for you.
 plugin distinguishes idle from shed from broken; *alerting on it* stays your side, and
 the watchdog must be separate from the thing it watches.
 
+## Inspecting receipts without a nats CLI on the broker
+
+Pilots on a containerized broker hit two walls: the stock `nats` server image ships no
+CLI, and the JetStream monitor (`/jsz`) exposes account/stream **aggregates only** —
+per-stream and per-consumer detail 404s there. The official `natsio/nats-box` image is
+the CLI sidecar: run it against the same server with the same posture as your plugin
+settings (pick the auth flag matching your `auth.*` precedence, add `--tlscacert`/
+`--tlsclientcert`/`--tlsclientkey` to match `tls.*`):
+
+```sh
+# auth flag: --creds /creds/jetstream.creds | --token "$TOKEN" | --nkey <SU…seed>
+# tls flags: --tlscacert/--tlsclientcert/--tlsclientkey to match settings tls.*
+docker run --rm -it --network host \
+  -v "$PWD/creds:/creds:ro" \
+  natsio/nats-box:latest \
+  nats --server nats://localhost:4222 --creds /creds/jetstream.creds stream info hermes
+```
+
+Copy-paste receipt flow (stream name = your `stream` setting; wake durable/queue =
+`jetstream-<wake[].name>`; drop `--server/--creds` if your alias or local broker covers it):
+
+```sh
+nats --server nats://localhost:4222 stream ls                                # stream exists?
+nats --server … stream info hermes                                           # msgs, first/last seq, subjects
+nats --server … consumer info hermes jetstream-<route>                       # ack floor, num_redelivered, pending
+nats --server … stream get hermes --last-for 'ci.result.red'                # last event on a subject (payload shown)
+nats --server … stream subjects hermes "hermes.>"                            # per-subject counts
+nats --server … consumer report hermes                                       # all wake consumers in one view
+```
+
+Then join to the plugin side: the ledger in `<plugin-data>/wake-claims.db` keys rows as
+`<stream>:<consumer>:<stream_seq>` (`sqlite3 wake-claims.db "select * from wake_claims
+order by claimed_at desc limit 10"`), so a stream seq from `consumer info` maps straight
+to a `claimed`/`done` wake. Seq present in the stream but no row → the consumer never
+delivered it; `done` row + no session wake → check `jetstream_status` counters.
+Full runnable version: [examples/nats-box-receipts.md](../examples/nats-box-receipts.md).
+
 ## Gate parity (CI)
 
 `scripts/ci.sh` IS the gate: unit tests, the generality grep-gate, syntax, and doctor.
