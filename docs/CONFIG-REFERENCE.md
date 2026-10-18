@@ -125,6 +125,37 @@ order by claimed_at desc limit 10"`), so a stream seq from `consumer info` maps 
 to a `claimed`/`done` wake. Seq present in the stream but no row → the consumer never
 delivered it; `done` row + no session wake → check `jetstream_status` counters.
 Full runnable version: [examples/nats-box-receipts.md](../examples/nats-box-receipts.md).
+=======
+## nats-py version traps (verified against the pin, nats-py 2.16.0)
+
+The plugin declares `nats-py>=2.7,<3` (`plugin.yaml`). Signatures below were
+introspected against the installed 2.16.0 and cross-checked at the v2.7.0 floor
+(log: `docs/pilot/hjs-vlt.md`). These are the traps that cost piloting lanes time:
+
+- **`get_msg()` names its stream argument `stream_name`, not `stream`** — the only
+  JetStream call that does; `publish`/`subscribe`/`pull_subscribe` all use `stream=`.
+  Passing it by keyword raises `TypeError: ... unexpected keyword argument 'stream'`.
+  ```python
+  msg = await js.get_msg("hermes", seq=42)         # correct (positional stream)
+  msg = await js.get_msg(stream="hermes", seq=42)  # TypeError
+  ```
+- **`RawStreamMsg` (what `get_msg` returns) exposes `.seq` / `.headers`, not `.payload`.**
+  Fields: `subject, seq, data, hdrs, headers, stream, time`; `.sequence` is an alias of
+  `.seq`, `.hdrs` is the raw-bytes twin of the decoded `.headers` dict. `.time` does not
+  exist at the v2.7.0 floor — read it guarded or not at all.
+- **`ConsumerConfig(backoff=...)` needs nats-py ≥ 2.8.** `bus.subscribe()` passes
+  `backoff`, so the declared `>=2.7` floor can crash a wake consumer with an
+  unexpected-kwarg `TypeError` on 2.7.x; install 2.8+ (effective floor).
+- **`Msg.metadata` is a property, not a callable.** Use `msg.metadata.sequence.stream`;
+  `msg.metadata()` raises at call time, not import time.
+- **The client has no `_loop` attribute.** nats-py binds its transport to whatever loop
+  runs `connect()` but never stores it; capture `asyncio.get_running_loop()` right after
+  `await nc.connect(...)` (that's what `bus.loop` does — reading `_nc._loop` is silently `None`).
+
+Everything else the plugin/drills call (`publish(..., headers=)` → `PubAck.stream/.seq/.duplicate`,
+`pull_subscribe(..., config=ConsumerConfig(opt_start_seq=...))`, `fetch(batch, timeout=)`,
+`nats.errors.TimeoutError`, `nats.js.errors.NotFoundError/BadRequestError`,
+`StreamConfig`, `DeliverPolicy.BY_START_SEQUENCE`) is unchanged across 2.7.0 → 2.16.0.
 
 ## Gate parity (CI)
 
