@@ -2,7 +2,7 @@
 
 NATS JetStream plugin for [Hermes Agent](https://hermes-agent.nousresearch.com). It connects agents to your event bus: NATS events wake sessions and fire jobs, and agents publish events that the rest of your system consumes. No core changes.
 
-**Status: v1.0 (stable).** Agent guide: [`docs/AGENT-USAGE-GUIDE.md`](docs/AGENT-USAGE-GUIDE.md) · Config reference: [`docs/CONFIG-REFERENCE.md`](docs/CONFIG-REFERENCE.md) · Examples: [`examples/`](examples/) · Changelog: [`CHANGELOG.md`](CHANGELOG.md).
+**Status: v1.2 (stable).** Agent guide: [`docs/AGENT-USAGE-GUIDE.md`](docs/AGENT-USAGE-GUIDE.md) · Config reference: [`docs/CONFIG-REFERENCE.md`](docs/CONFIG-REFERENCE.md) · Examples: [`examples/`](examples/) · Changelog: [`CHANGELOG.md`](CHANGELOG.md).
 
 ## What it does
 
