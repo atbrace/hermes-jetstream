@@ -1030,3 +1030,74 @@ class LifecycleTapCounters(unittest.TestCase):
         tap._emit("session.start")(platform="tg", session_key="k" * 100)
         self.assertEqual(tap.stats()["dropped"], 1)
         tap.stop()
+
+
+class MonorepoDiscovery(unittest.TestCase):
+    """hjs-c03: a bare-repo install publishes the clone root; plugin.yaml sits two
+    levels below it and is invisible under the core's discovery depth rule, so the
+    platform dies as an unhelpful None. Simulates the core's own rule (one-level
+    recursion into a manifest-less dir, depth-capped) against the repo's real files."""
+
+    ROOT = Path(__file__).resolve().parents[1]
+
+    def _scan(self, root, depth=0):  # mirrors hermes_cli.plugins_discovery.scan_directory
+        found = []
+        for child in sorted(root.iterdir()):
+            if not child.is_dir() or child.name.startswith((".", "__")):
+                continue
+            manifest = child / "plugin.yaml"
+            if manifest.exists():
+                found.append(manifest)
+            elif depth >= 1:
+                continue  # core: "no plugin.yaml, depth cap reached"
+            else:
+                found.extend(self._scan(child, depth + 1))
+        return found
+
+    def _published(self, unit_path):  # install publishes <unit> as <plugins_dir>/hermes-jetstream
+        td = tempfile.mkdtemp()
+        os.symlink(str(unit_path), str(Path(td) / "hermes-jetstream"))
+        return self._scan(Path(td))
+
+    def test_bare_repo_publish_hides_manifest(self):
+        self.assertEqual(self._published(self.ROOT), [])  # substance reproduced
+
+    def test_unit_subdir_publish_is_discoverable(self):
+        found = self._published(self.ROOT / "plugin" / "hermes_jetstream")
+        self.assertEqual(len(found), 1)
+        text = found[0].read_text()
+        self.assertRegex(text, r"(?m)^name:\s*hermes-jetstream\s*$")
+        self.assertIn("python_dependencies", text)
+
+    def test_readme_install_command_resolves_to_manifest(self):
+        import re
+        m = re.search(r"hermes plugins install\s+(\S+)", (self.ROOT / "README.md").read_text())
+        self.assertIsNotNone(m, "README must document an install command")
+        parts = m.group(1).rstrip("/").split("/")
+        self.assertGreaterEqual(len(parts), 4, "identifier must carry the unit subdir")
+        self.assertTrue((self.ROOT.joinpath(*parts[2:]) / "plugin.yaml").is_file())
+
+
+class PlatformFailureNamesItsReason(unittest.TestCase):
+    """hjs-c03: create_adapter returns None on missing deps and prints
+    PlatformEntry.install_hint in that line — register() must fill it."""
+
+    def test_register_advertises_install_hint(self):
+        import hermes_jetstream
+        captured = {}
+
+        class Ctx:
+            def get_config(self, key, default=None):
+                return default
+            def register_platform(self, **kw):
+                captured.update(kw)
+            def register_tool(self, **kw):
+                pass
+            def on_unload(self, fn):
+                pass
+
+        hermes_jetstream.register(Ctx())
+        hint = captured.get("install_hint", "")
+        self.assertIn("nats-py", hint)  # remedy 1: the dep itself
+        self.assertIn("plugins install", hint)  # remedy 2: the unit-subdir identifier
+        self.assertIsNotNone(captured.get("check_fn"))
