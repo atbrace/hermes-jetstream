@@ -37,6 +37,7 @@ def register(ctx) -> None:
         adapter_factory=make_adapter_factory(_factory),
         check_fn=check_deps,
         ensure_deps_fn=None,  # nats-py is declared in plugin.yaml; operator installs
+        install_hint='pip install "nats-py>=2.7,<3" into the gateway venv; if this plugin was installed from the bare repo, the buried manifest hid python_dependencies — reinstall pointing at the unit dir: hermes plugins install atbrace/hermes-jetstream/plugin/hermes_jetstream (hjs-c03)',
         validate_config=validate_config,
         allowed_users_env="JETSTREAM_ALLOWED_USERS",  # platform-scoped allowlist; without it every wake falls to the global list (hjs-lll)
         emoji="📡",
