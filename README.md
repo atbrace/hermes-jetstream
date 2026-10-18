@@ -25,6 +25,7 @@ Together these make the agent an ordinary citizen of your event flow. Anything o
 - Long-running: the platform adapter holds persistent subscriptions and reconnect loops for its lifetime, inside the gateway process.
 - Credentials: token / nkey / user-pass / creds-file values come from your config `${VAR}` references, resolved through Hermes' profile-scoped secret scope. The plugin never writes or rotates them.
 - Wakes inject event payloads into prompts. Keep `subscribe_allowed` tight to subjects whose publishers you trust.
+- CLI surfaces: `hermes plugins capabilities` shows *consent-gated capabilities* (core trust gates like `tools.override`) — this plugin declares none, so `(none)` there is correct, not a missing-tool bug. The six tools register as the `jetstream` toolset: see them with `hermes tools list`, and in sessions via runtime tool search (hjs-zkc).
 
 ## Install
 
