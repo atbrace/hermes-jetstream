@@ -785,9 +785,29 @@ class ToolsPublishFetch(unittest.TestCase):
 
     def test_msg_id_is_deterministic(self):
         from hermes_jetstream.tools import _msg_id
-        self.assertEqual(_msg_id(b"abc"), _msg_id(b"abc"))
-        self.assertNotEqual(_msg_id(b"abc"), _msg_id(b"abd"))
-        self.assertTrue(_msg_id(b"abc").startswith("hermes-"))
+        self.assertEqual(_msg_id("ci.x", b"abc"), _msg_id("ci.x", b"abc"))
+        self.assertNotEqual(_msg_id("ci.x", b"abc"), _msg_id("ci.x", b"abd"))
+        self.assertTrue(_msg_id("ci.x", b"abc").startswith("hermes-"))
+
+    def test_msg_id_salted_by_subject(self):
+        """Same body on two subjects of one stream must NOT share a wire msg-id
+        (JetStream dedupes Nats-Msg-Id per stream, hjs-cxe)."""
+        sent = []
+        t = self._tools(publish_allowed=("ops.>",))
+        async def fake_ephemeral(fn):
+            class FakeJS:
+                async def publish(self, subject, body, timeout=None, headers=None):
+                    sent.append((subject, (headers or {})["Nats-Msg-Id"]))
+            return await fn(FakeJS())
+        t._ephemeral = fake_ephemeral
+        del t._publish  # un-stub: this test exercises the real _publish wire headers
+        body = b'{"kind":"event","data":{}}'
+        self.run_async(t._publish("ops.alpha", body))
+        self.run_async(t._publish("ops.beta", body))
+        self.assertEqual([s for s, _ in sent], ["ops.alpha", "ops.beta"])
+        self.assertNotEqual(sent[0][1], sent[1][1])  # no cross-subject dedupe collision
+        self.run_async(t._publish("ops.alpha", body))
+        self.assertEqual(sent[2][1], sent[0][1])     # in-subject republish keeps id (dedupes)
 
 
 class SettingsFromCtx(unittest.TestCase):

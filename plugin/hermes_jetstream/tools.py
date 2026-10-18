@@ -138,11 +138,11 @@ class JetstreamTools:
         if bus is not None:
             try:
                 return await _on_bus_loop(bus, lambda: bus.publish(
-                    subject, body, headers={"Nats-Msg-Id": _msg_id(body)}))
+                    subject, body, headers={"Nats-Msg-Id": _msg_id(subject, body)}))
             except BusLoopGone:
                 pass  # connection vanished between pick and use: ephemeral path below
         return await self._ephemeral(lambda js: js.publish(subject, body, timeout=5.0,
-                                                          headers={"Nats-Msg-Id": _msg_id(body)}))
+                                                headers={"Nats-Msg-Id": _msg_id(subject, body)}))
 
     # -- fetch -------------------------------------------------------------
     async def nats_fetch(self, subject: str, timeout_seconds: float = 30.0, batch: int = 1, **_) -> str:
@@ -204,9 +204,11 @@ class JetstreamTools:
             await bus.stop()
 
 
-def _msg_id(body: bytes) -> str:
+def _msg_id(subject: str, body: bytes) -> str:
+    # Subject-salted: JetStream dedupes Nats-Msg-Id per STREAM, so an unsalted
+    # id shared across subjects on one stream would silently drop the second publish.
     import hashlib
-    return "hermes-" + hashlib.sha256(body).hexdigest()[:32]
+    return "hermes-" + hashlib.sha256(subject.encode("utf-8") + b"\x00" + body).hexdigest()[:32]
 
 
 WATCH_SCHEMA = {
