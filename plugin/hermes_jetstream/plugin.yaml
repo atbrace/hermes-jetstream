@@ -20,6 +20,7 @@ provides_tools:
   - jetstream_unwatch
   - jetstream_list
   - jetstream_status
+  - jetstream_wake
 config_schema:
   servers: { type: list, default: ["localhost:4222"] }
   stream: { type: str, default: "hermes" }

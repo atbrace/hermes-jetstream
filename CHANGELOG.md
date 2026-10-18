@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Runtime wake routes (`jetstream_wake`)**: register/unregister/list DURABLE wake routes at runtime — no config edit, no gateway restart. Rows persist in the plugin data dir (`wake-routes.json`), rebind at every platform bind, and carry the full config-route gate set: `subscribe_allowed` match required (loud refusal at register), same prompt/rate rails, `rt-`-namespaced names that can't collide with config routes. Unregister is idempotent; optional `max_age_s` self-retires abandoned routes at bind; `jetstream_status` shows runtime rows with `source: "runtime"` (config rows now `source: "config"`). See CONFIG-REFERENCE "Runtime wake routes". (`feat(wake)` hjs-tr9)
+
 ## 1.1.0 — pilot-hardened (2026-10-18)
 
 Six fixes from the haus-estate pilot, each reproduced, adversarially reviewed, and merged with green CI:

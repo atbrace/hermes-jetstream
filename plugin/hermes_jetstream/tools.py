@@ -8,8 +8,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import Any, Dict, Optional
 
+from .config import WakeRoute
 from .envelope import build_envelope, find_secret_like
 from .subject import SubjectPolicy, validate_subject_literal
 
@@ -192,6 +194,76 @@ class JetstreamTools:
                 await psub.unsubscribe()
         return await self._ephemeral(_go)
 
+    # -- runtime wake routes (hjs-tr9) ---------------------------------------
+    async def jetstream_wake(self, action: str = "list", name: str = "", subject: str = "",
+                             prompt: Optional[str] = None, rate_per_min=None,
+                             min_interval_s=None, max_age_s=None, **_) -> str:
+        """Durable wake routes at runtime: persisted plugin-side, live-rebound when a
+        gateway adapter is connected, otherwise bound at the next platform bind."""
+        from .runtime_routes import default_store, NAME_PREFIX, MAX_RUNTIME_ROUTES
+        store = default_store()
+        action = (action or "list").strip().lower()
+        if action == "list":
+            rows = store.rows()
+            if not rows:
+                return "No runtime wake routes."
+            return json.dumps([rows[k] for k in sorted(rows)], default=str)
+        nm = (name or "").strip()
+        if not nm:
+            return "ERROR: name required"
+        nm = nm if nm.startswith(NAME_PREFIX) else NAME_PREFIX + nm
+        if action == "unregister":
+            row = store.remove(nm)
+            await self._live_runtime("remove", nm)  # idempotent: no-op if not live here
+            return (f"Unregistered {nm}.\n" + json.dumps(row, default=str) if row
+                    else f"No runtime route {nm} (nothing to remove).")
+        if action != "register":
+            return f"ERROR: unknown action {action!r} (register|unregister|list)"
+        try:
+            route = WakeRoute.from_dict({"name": nm, "subject": subject,
+                                         **({"prompt": prompt} if prompt else {}),
+                                         **({} if rate_per_min is None else {"rate_per_min": rate_per_min}),
+                                         **({} if min_interval_s is None else {"min_interval_s": min_interval_s})})
+        except ValueError as exc:
+            return f"ERROR: {exc}"
+        if not self.fetch_policy.allows(route.subject):  # same allowlist as fetch/watch/wake
+            return f"ERROR: {self.fetch_policy.deny_message(route.subject, 'subscribe_allowed')}"
+        for r in self.settings.wake:  # namespaced, but an explicit config durable may still squat
+            if r.name == nm or r.durable == route.durable:
+                return f"ERROR: {nm} collides with config route {r.name!r}; pick another name"
+        rows = store.rows()
+        if nm not in rows and len(rows) >= MAX_RUNTIME_ROUTES:
+            return f"ERROR: runtime route limit reached ({MAX_RUNTIME_ROUTES}); jetstream_wake unregister first"
+        row = {"name": route.name, "subject": route.subject, "durable": route.durable,
+               "prompt": route.prompt, "max_payload_chars": route.max_payload_chars,
+               "rate_per_min": route.rate_per_min, "min_interval_s": route.min_interval_s,
+               "source": "runtime", "registered_at": time.time()}
+        if max_age_s is not None:
+            age = min(30 * 86400, max(1.0, float(max_age_s)))
+            row["max_age_s"] = age
+            row["expires_at"] = row["registered_at"] + age
+        store.put(row)
+        try:
+            await self._live_runtime("add", route)
+        except Exception as exc:
+            store.remove(nm)  # rollback: a refused/failed live bind never leaves a stray row
+            return f"ERROR: live bind failed: {exc}"
+        return json.dumps(row, default=str)
+
+    async def _live_runtime(self, op: str, arg) -> None:
+        """Rebind adapters hosted in THIS process (CLI/cron has none: the JSON store
+        still stands, the routes bind at next platform start). Each adapter's work
+        runs on its own bus loop — same hop law as _on_bus_loop publishing."""
+        from .adapter import active_adapters
+        for a in active_adapters():
+            bus = getattr(a, "_bus", None)
+            if bus is None or not bus.connected:
+                continue  # not bound yet: connect() picks the store row up itself
+            if op == "add":
+                await _on_bus_loop(bus, lambda a=a: a.add_runtime_route(arg))
+            else:
+                await _on_bus_loop(bus, lambda a=a: a.remove_runtime_route(arg))
+
     # -- plumbing ----------------------------------------------------------
     async def _ephemeral(self, fn):
         """Direct connect for processes without the gateway adapter (CLI tool calls)."""
@@ -226,6 +298,20 @@ UNWATCH_SCHEMA = {
     "type": "object",
     "properties": {"watch_id": {"type": "string", "description": "Watch id from jetstream_watch."}},
     "required": ["watch_id"],
+}
+
+WAKE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "action": {"type": "string", "enum": ["register", "unregister", "list"],
+                   "description": "Verb (default: list)."},
+        "name": {"type": "string", "description": "Route name; stored and reported as rt-<name> (namespaced away from config routes). Required for register/unregister."},
+        "subject": {"type": "string", "description": "register: subject/wildcard to wake on; must match subscribe_allowed (refused loudly otherwise)."},
+        "prompt": {"type": "string", "description": "register: wake prompt template, single-brace {subject} {payload} {seq} only."},
+        "rate_per_min": {"type": "number", "description": "register: per-route token bucket (default 10); excess is shed."},
+        "min_interval_s": {"type": "number", "description": "register: coalescing window, events closer are dropped."},
+        "max_age_s": {"type": "number", "description": "register: auto-retire after this age (swept at platform bind); omit = never expires."},
+    },
 }
 
 
@@ -296,6 +382,12 @@ def register_tools(ctx) -> None:
         is_async=False, emoji="📡",
         description="List active JetStream watches (id, subject, remaining TTL).")
 
+    ctx.register_tool(
+        name="jetstream_wake", toolset="jetstream", schema=WAKE_SCHEMA,
+        handler=_bound(lambda a: _tools().jetstream_wake(**a)),
+        is_async=False, emoji="📡",
+        description="Register/unregister/list DURABLE wake routes at runtime (no gateway restart). Same gates as config wake routes: subject must match subscribe_allowed (refused loudly, never silently), rate/coalesce rails apply. Namespaced rt-<name>, persisted in the plugin data dir, live-bound when the gateway adapter is up and rebound at every platform bind; max_age_s self-retires abandoned routes. Output: the route row(s).")
+
     def _status(args, kw):
         try:
             from .adapter import active_status
@@ -312,7 +404,7 @@ def register_tools(ctx) -> None:
         name="jetstream_status", toolset="jetstream", schema={"type": "object", "properties": {}},
         handler=lambda args, **kw: _status(args, kw),
         is_async=False, emoji="📡",
-        description="JetStream platform health: connection, per-route wake counters (dispatched/shed/coalesced/skipped/failed/lost), reconnect_count, lifecycle tap counters, last-attempt/last-dispatch clocks, active watches, last error. Answers 'is my watch alive?' and 'did I lose a wake?' without external monitoring.")
+        description="JetStream platform health: connection, per-route wake counters (dispatched/shed/coalesced/skipped/failed/lost) with source=config|runtime, reconnect_count, lifecycle tap counters, last-attempt/last-dispatch clocks, active watches, last error. Answers 'is my watch alive?' and 'did I lose a wake?' without external monitoring.")
 
 
 def _run_async(coro):

@@ -66,6 +66,28 @@ missing from `publish_allowed`. `docs/wake-routes.schema.json` mirrors the
 route item shape for editor validation; the parser in `config.py` remains the
 source of truth.
 
+## Runtime wake routes (`jetstream_wake`)
+
+`jetstream_wake(action="register", name, subject, …)` adds a DURABLE wake route at
+runtime — no config edit, no gateway restart. Rows persist in a plugin-owned JSON
+file (`<plugin-data>/wake-routes.json`, same durability class as the wake ledger)
+and are rebound at every platform bind; `action="list"` and `action="unregister"`
+(idempotent) round out the verb. Runtime rows appear in `jetstream_status` next to
+config routes, tagged `source: "runtime"`.
+
+The gates are the config gates, not weaker: the subject must match
+`subscribe_allowed` (registration is refused loudly otherwise, never silently
+dropped), the row parses through the same `WakeRoute` rules (prompt template
+policy, rate rails, durable-name law), and the pipeline's rate/coalesce/dedupe
+rails run unchanged. Names are namespaced to `rt-<name>` (durable
+`jetstream-rt-<name>`) so a runtime route can never shadow a config route; a name
+or durable that still collides with a config route is refused. Optional
+`max_age_s` self-retires abandoned routes: expiry is swept at platform bind.
+Registration caps at 16 routes; re-registering an existing name updates it.
+From a CLI/cron process (no live adapter) the row persists and binds at the next
+platform start. `jetstream_watch` remains the right tool for ephemeral,
+session-scoped interest; this verb is for durable consumers an agent owns.
+
 ## Auth
 
 Wake sessions are authorized through the standard gateway allowlist. Set
