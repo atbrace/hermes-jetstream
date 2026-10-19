@@ -62,6 +62,16 @@ class ValidateCli(unittest.TestCase):
         self.assertIn("wake[0]", out)
         self.assertIn("subscribe_allowed", out)
 
+    def test_hash_subject_refused_even_when_allowlisted(self):
+        # 'ci.#' DOES match the ci.> allowlist — only the '#' literal rule
+        # can catch it. This is the exact shape of the dead haus.gh.# route.
+        bad = json.loads(json.dumps(GOOD))
+        bad["wake"][0]["subject"] = "ci.#"
+        rc, out = _run(bad)
+        self.assertEqual(rc, 1)
+        self.assertIn("wake[0]", out)
+        self.assertIn("#", out)
+
     def test_duplicate_route_name_is_refused(self):
         bad = json.loads(json.dumps(GOOD))
         bad["wake"][1]["name"] = "ci-red"

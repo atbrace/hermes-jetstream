@@ -15,7 +15,8 @@
     "subject": {
       "type": "string",
       "minLength": 1,
-      "description": "Literal or wildcard subject; must match a subscribe_allowed pattern or wakes are silently acked and dropped at runtime."
+      "pattern": "^[^#]*$",
+      "description": "Literal or wildcard subject; must match a subscribe_allowed pattern or wakes are silently acked and dropped at runtime. Wildcards are '*' (one token) and '>' (trailing rest) ONLY — '#' is a literal token in NATS, so subjects carrying it are refused at load (a '#' route can never fire)."
     },
     "durable": {
       "type": "string",

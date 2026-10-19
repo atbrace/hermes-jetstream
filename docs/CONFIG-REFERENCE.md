@@ -12,7 +12,7 @@ All keys live under `plugins.entries.hermes-jetstream.settings` (platform config
 | `subscribe_allowed` | list | `[]` | Gates wake routes, `nats_fetch`, and `jetstream_watch` patterns. |
 | `wake` | list | `[]` | Wake routes (below). Item schema: [`wake-routes.schema.json`](wake-routes.schema.json). Dry-run your whole settings block before the restart gate: `python3 scripts/validate_settings.py settings.json` (exit 1 names every problem; see Validating before restart). |
 | `wake[].name` | str | required | Route identity (also bucket/coalesce key). |
-| `wake[].subject` | str | required | Literal or wildcard; must match `subscribe_allowed`. |
+| `wake[].subject` | str | required | Literal or wildcard; must match `subscribe_allowed`. Wildcards are `*` (one token) and `>` (trailing rest) only — `#` is a **literal** in NATS, so subjects containing it are refused at load (a `#` route can never match any publish; estate incident est-hyvwo.17). |
 | `wake[].durable` | str | `jetstream-<name>` | Durable consumer **and** queue group name (NATS requires equality for queue subs). Same value across gateways = one shared queue group. |
 | `wake[].prompt` | str | `JetStream event on {subject}. Payload: {payload}` | Template; single-brace `{subject} {payload} {seq} {ts}` only, payload truncated. |
 | `wake[].max_payload_chars` | int | `2000` | Payload truncation into the prompt. |

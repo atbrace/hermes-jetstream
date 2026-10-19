@@ -83,6 +83,15 @@ class WakeRoute:
         subject = str(d.get("subject", "")).strip()
         if not subject:
             raise ValueError(f"wake route {name!r} requires a subject")
+        # NATS treats '#' as a LITERAL token, not a wildcard (AMQL heritage): a
+        # subject carrying it can only match a publish whose token is literally
+        # '#', i.e. a silently dead route. Reject at config load like the durable
+        # rule below — a route that can never fire is worse than a refused load.
+        if "#" in subject:
+            raise ValueError(
+                f"wake route {name!r}: subject {subject!r} contains '#'; NATS wildcards "
+                "are '*' (one token) and '>' (trailing rest) only — '#' is a literal, "
+                "so this route could never match any publish")
         durable = str(d.get("durable") or f"jetstream-{name}")
         # NATS rejects wildcards/whitespace in consumer names; fail at config load,
         # not at connect where the error takes down every route on the platform.

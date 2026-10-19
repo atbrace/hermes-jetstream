@@ -124,6 +124,23 @@ class SubjectMatches(unittest.TestCase):
         validate_subject_literal("a.b.c", "publish")
 
 
+class WakeRouteSubjectHash(unittest.TestCase):
+    """'#' is a LITERAL token in NATS, never a wildcard: a wake subject
+    carrying it can only ever match a literal '#' publish, i.e. a silently
+    dead route. The parser must refuse the load (estate incident est-hyvwo.17:
+    a haus.gh.# route sat delivered=0 for days looking deployed)."""
+
+    def test_hash_subject_refused(self):
+        with self.assertRaises(ValueError):
+            WakeRoute.from_dict({"name": "r", "subject": "a.b.#"})
+        with self.assertRaises(ValueError):
+            WakeRoute.from_dict({"name": "r", "subject": "a.#.closed"})
+
+    def test_star_gt_literal_still_load(self):
+        for s in ("a.b.*", "a.b.>", "a.b.c"):
+            WakeRoute.from_dict({"name": "r", "subject": s})
+
+
 class Envelope(unittest.TestCase):
     def test_self_origin(self):
         env = build_envelope("test", {"x": 1}, profile="homelab", session_id="s1")
