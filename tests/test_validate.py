@@ -112,5 +112,61 @@ class SchemaMirrorsParser(unittest.TestCase):
         self.assertEqual(set(schema["required"]), {"name", "subject"})
 
 
+class WakeAuthzDigest(unittest.TestCase):
+    """hjs-oes: the digest must name allowlist, routes, and verdicts from disk."""
+
+    def _home(self, env_lines, ledger_routes=(), runtime_rows=None):
+        import sqlite3
+        home = Path(tempfile.mkdtemp())
+        (home / ".env").write_text("\n".join(env_lines) + "\n")
+        data = home / "plugin-data" / "hermes-jetstream"
+        data.mkdir(parents=True)
+        if runtime_rows is not None:
+            (data / "wake-routes.json").write_text(json.dumps(runtime_rows))
+        if ledger_routes:
+            db = sqlite3.connect(data / "wake-claims.db")
+            db.execute("CREATE TABLE wake_claims (dedupe_key TEXT PRIMARY KEY, route TEXT, "
+                       "status TEXT, claimed_at REAL, done_at REAL)")
+            for i, r in enumerate(ledger_routes):
+                db.execute("INSERT INTO wake_claims VALUES(?,?,?,?,?)", (f"k{i}", r, "done", 1.0, None))
+            db.commit()
+        return home
+
+    def _run(self, home, settings=None):
+        p = subprocess.run([sys.executable, str(REPO / "scripts" / "wake_authz_digest.py"),
+                            "--home", str(home)] + (["--settings", str(settings)] if settings else []),
+                           capture_output=True, text=True, timeout=30)
+        return p
+
+    def test_dropped_route_exit_one_and_named(self):
+        home = self._home(["JETSTREAM_ALLOWED_USERS=jetstream:alive"],
+                          ledger_routes=["alive", "ghost"])
+        p = self._run(home)
+        self.assertEqual(p.returncode, 1)
+        self.assertRegex(p.stdout, r"alive\s+jetstream:alive\s+AUTHORIZED")
+        self.assertRegex(p.stdout, r"ghost\s+jetstream:ghost\s+DROPPED")
+        self.assertIn("1 authorized, 1 would be dropped", p.stdout)
+
+    def test_global_allowlist_and_wildcard_authorize(self):
+        home = self._home(["GATEWAY_ALLOWED_USERS=me", "JETSTREAM_ALLOWED_USERS=*"],
+                          runtime_rows={"rt-x": {"name": "rt-x"}})
+        p = self._run(home)
+        self.assertEqual(p.returncode, 0)
+        self.assertIn("AUTHORIZED", p.stdout)
+
+    def test_config_routes_included_via_settings(self):
+        home = self._home(["JETSTREAM_ALLOWED_USERS=jetstream:cfg"])
+        settings = Path(tempfile.mkdtemp()) / "s.json"
+        settings.write_text(json.dumps({"wake": [{"name": "cfg", "subject": "a.b"}]}))
+        p = self._run(home, settings)
+        self.assertEqual(p.returncode, 0)
+        self.assertIn("source=config", p.stdout)
+
+    def test_empty_state_clean_exit(self):
+        p = self._run(self._home(["FOO=bar"]))
+        self.assertEqual(p.returncode, 0)
+        self.assertIn("no wake routes", p.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

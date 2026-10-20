@@ -55,7 +55,9 @@ The name is stored as `rt-deploy-approve` (durable `jetstream-rt-deploy-approve`
 an existing name to update it; total runtime routes cap at 16. From a CLI/cron
 process (no live adapter) the row still persists and binds at the next platform
 start. Wake sessions authorize as `jetstream:rt-<name>` — the operator must have
-that in `JETSTREAM_ALLOWED_USERS` (or `*`).
+that in `JETSTREAM_ALLOWED_USERS` (or `*`). Unsure whether your route is
+authorized? `python3 scripts/wake_authz_digest.py --home <profile-home>` prints
+the allowlist and a per-route AUTHORIZED|DROPPED verdict from disk, no gateway needed.
 
 **Tear it down idempotently at the end of your task** (safe to call even if a
 prior run already removed it, or it never bound here):

@@ -94,7 +94,13 @@ Choosing among the listening surfaces and copy-paste recipes:
 Wake sessions are authorized through the standard gateway allowlist. Set
 `JETSTREAM_ALLOWED_USERS` (comma-separated, entries like `jetstream:<route-name>` or
 `*`) to allow wake routes for this platform without touching the global
-`GATEWAY_ALLOWED_USERS`. Route names you do not list stay default-deny.
+`GATEWAY_ALLOWED_USERS`. Route names you do not list stay default-deny — the
+gateway drops them with a WARNING line only. To see the whole picture without
+log archaeology, run the read-only digest: `python3 scripts/wake_authz_digest.py
+--home <profile-home>` prints the effective allowlist, every route known from
+on-disk state (runtime store, wake ledger; add `--settings settings.json` for
+config routes), and a per-route `AUTHORIZED | DROPPED` verdict (exit 1 if any
+route would be silently dropped).
 
 ### `nats_fetch` resume semantics
 
