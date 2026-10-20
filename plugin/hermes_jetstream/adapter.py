@@ -176,12 +176,30 @@ def _build_class():
 
         async def add_runtime_route(self, route) -> None:
             """Live-bind a freshly registered runtime route (no gateway restart).
-            Runs on the bus loop (tools hop via _on_bus_loop)."""
+            Runs on the bus loop (tools hop via _on_bus_loop).
+
+            hjs-a7i: over an existing name the prior sub is drained only AFTER the
+            new bind succeeds — a failed rebind restores the prior sub, so a refused
+            update never destroys the working route it was replacing. Drain failure
+            inverts: the NEW sub is drained and the old stays live (two live subs
+            on one durable would double-dispatch)."""
             if self._bus is None or self._pipeline is None or not self._bus.connected:
                 raise RuntimeError("platform not connected")
+            prior = self._runtime_subs.get(route.name)
             sub = await self._bus.subscribe_wake(
                 subject=route.subject, queue=route.durable,
                 on_message=lambda msg: self._pipeline.handle_message(msg, route))
+            if prior is not None and prior is not sub:
+                try:
+                    await prior.drain()
+                except Exception:
+                    try:
+                        await sub.unsubscribe()
+                    except Exception:
+                        pass
+                    logger.warning("[jetstream] runtime route %s: prior sub drain failed; "
+                                   "new sub dropped, old route left live", route.name)
+                    return
             self._runtime_subs[route.name] = sub
             self._runtime_names.add(route.name)
             self._pipeline._stat(route.name, "seed", 0.0, attempted=False)

@@ -163,6 +163,111 @@ class BindRebind(_Harness):
         self.assertIn("No runtime wake routes.", self.run_async(self.tools.jetstream_wake(action="list")))
 
 
+class AdapterRollback(unittest.TestCase):
+    """hjs-a7i: re-register over an existing runtime route must not destroy the
+    working route when the new live bind fails. Real adapter class over stubbed
+    gateway imports (lazy-import design keeps this stdlib-testable)."""
+
+    class _Sub:
+        def __init__(self, tag, fail_drain=False):
+            self.tag, self.drained, self.restored = tag, False, False
+            self._fail = fail_drain
+        async def drain(self):
+            if self._fail:
+                raise RuntimeError("drain refused")
+            self.drained = True
+        async def unsubscribe(self):
+            self.drained = True
+
+    def setUp(self):
+        import types
+        self._saved = {}
+        for name, attrs in {
+            "gateway": {},
+            "gateway.config": {"Platform": lambda *a, **k: "jetstream"},
+            "gateway.platforms": {},
+            "gateway.platforms.base": {"BasePlatformAdapter": type("B", (), {"__init__": lambda s, c, p: None})},
+        }.items():
+            self._saved[name] = sys.modules.get(name)
+            mod = types.ModuleType(name)
+            for k, v in attrs.items():
+                setattr(mod, k, v)
+            sys.modules[name] = mod
+        import asyncio as aio
+        self.loop = aio.new_event_loop()
+        from hermes_jetstream.adapter import build_adapter
+        self.adapter = build_adapter(object(), Settings())
+
+        class _P:
+            @staticmethod
+            def _stat(*a, **k):
+                pass
+        self.adapter._pipeline = _P()  # connected-guard passes; bind path only seeds stats
+
+    def tearDown(self):
+        for name, prev in self._saved.items():
+            if prev is None:
+                del sys.modules[name]
+            else:
+                sys.modules[name] = prev
+        import hermes_jetstream.adapter as ad
+        ad._ACTIVE_CLASS.clear()  # stub-built class must not leak to later tests
+        self.loop.close()
+
+    def _bus(self, fail_bind=False):
+        class Bus:
+            connected = True
+            loop = None
+            def __init__(self):
+                self.subs = []
+            async def subscribe_wake(self, *, subject, queue, on_message):
+                if fail_bind:
+                    raise RuntimeError("consumer refused")
+                sub = AdapterRollback._Sub(subject)
+                self.subs.append(sub)
+                return sub
+        bus = Bus()
+        bus.loop = self.loop
+        self.adapter._bus = bus
+        return bus
+
+    def _route(self, subject):
+        return WakeRoute.from_dict({"name": "rt-x", "subject": subject})
+
+    def test_failed_rebind_restores_prior_row_and_sub(self):
+        bus = self._bus()
+        aio_run = __import__("asyncio").run
+        aio_run(self.adapter.add_runtime_route(self._route("ci.old")))
+        prior = self.adapter._runtime_subs["rt-x"]
+        bus2 = self._bus(fail_bind=True)  # new bus refuses the rebind
+        with self.assertRaises(RuntimeError):
+            aio_run(self.adapter.add_runtime_route(self._route("ci.new")))
+        self.assertIs(self.adapter._runtime_subs["rt-x"], prior)  # old sub restored, not deleted
+        self.assertFalse(prior.drained)                            # old sub never drained
+        self.assertIn("rt-x", self.adapter._runtime_names)
+
+    def test_successful_rebind_drains_prior_sub(self):
+        bus = self._bus()
+        import asyncio as aio
+        aio.run(self.adapter.add_runtime_route(self._route("ci.old")))
+        prior = self.adapter._runtime_subs["rt-x"]
+        aio.run(self.adapter.add_runtime_route(self._route("ci.new")))
+        self.assertTrue(prior.drained)   # no double-consumption of the same durable
+        self.assertIsNot(self.adapter._runtime_subs["rt-x"], prior)
+
+    def test_prior_drain_failure_never_orphans_two_subs(self):
+        bus = self._bus()
+        import asyncio as aio
+        aio.run(self.adapter.add_runtime_route(self._route("ci.old")))
+        prior = self.adapter._runtime_subs["rt-x"]
+        prior._fail = True
+        aio.run(self.adapter.add_runtime_route(self._route("ci.new")))
+        # old sub could not be drained: the new sub is dropped, old stays live
+        self.assertIs(self.adapter._runtime_subs["rt-x"], prior)
+        self.assertFalse(prior.drained)
+        self.assertTrue(bus.subs[-1].drained)   # the new sub was unsubscribed away
+
+
 class StatusSource(unittest.TestCase):
     def test_tag_sources(self):
         snap = {"cfg": {"dispatched": 1}, "rt-x": {"dispatched": 0}}
@@ -238,6 +343,20 @@ class LiveRebindHarness(unittest.TestCase):
         out = asyncio.run(self.tools.jetstream_wake(action="register", name="ci", subject="ci.result"))
         self.assertIn("ERROR", out)
         self.assertEqual(self.store.rows(), {})   # no stray row behind a failed bind
+
+    def test_failed_re_register_restores_the_prior_row(self):
+        """hjs-a7i: update over a live route that fails must keep the OLD route."""
+        asyncio.run(self.tools.jetstream_wake(action="register", name="ci", subject="ci.result"))
+        class Boom(self._FakeAdapter):
+            async def add_runtime_route(self, route):
+                raise RuntimeError("consumer refused")
+        self.adapter = Boom(self.loop)
+        import hermes_jetstream.adapter as ad
+        ad.active_adapters = lambda: [self.adapter]
+        out = asyncio.run(self.tools.jetstream_wake(action="register", name="ci", subject="ci.other"))
+        self.assertIn("ERROR", out)
+        self.assertEqual(self.store.rows()["rt-ci"]["subject"], "ci.result")  # prior row stands
+        self.assertNotIn("rt-ci", self.adapter.removed)  # prior live sub never torn down
 
 
 if __name__ == "__main__":
