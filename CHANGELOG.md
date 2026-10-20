@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **`status().last_sweep_ts`** (`hjs-plm`, partial): every metrics surface now carries the sweep loop's freshness clock — `0.0` means the loop has never completed a pass, so a fresh-but-unswept read can no longer masquerade as `attempted=0` idle. Remaining hjs-plm items (transcript truncation in the drill harness, payload-in-code drills, restart-skipped re-runnability, drill-id dedupe) are harness-side and tracked separately.
+
 - **Agent-facing API facts landed where agents read** (`hjs-nra`): tool schemas now state the envelope size cap and `{payload}` truncation in their descriptions; CONTRIBUTING gained an Environment facts block (interpreter requirements, the nats-py 2.x `ConsumerConfig`/`metadata` naming traps, and where the caps live). These facts previously lived only in source and cost agents repeat probes every session.
 - **README install: git-URL flattening note** (`hjs-mrc`): a raw git-URL install lands the full clone with the unit nested below the loader's view and the plugin silently deregisters; the README now gives the one-line flatten remedy. (Catalog pin staleness was fixed separately upstream — catalog PR NousResearch/hermes-agent#141282, merged 2026-10-19.)
 - **Failed runtime re-register no longer destroys the route it was replacing** (`hjs-a7i`): `jetstream_wake` register over an existing name rolled back by deleting the prior row and tearing down nothing; a refused live bind left the working route gone from the store while its live sub could orphan. Rollback now restores the prior row and leaves the prior live sub untouched; the adapter drains a prior sub only after the new bind succeeds, and on drain failure drops the new sub instead of double-binding one durable.

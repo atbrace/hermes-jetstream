@@ -268,6 +268,50 @@ class AdapterRollback(unittest.TestCase):
         self.assertTrue(bus.subs[-1].drained)   # the new sub was unsubscribed away
 
 
+class SweepClock(unittest.TestCase):
+    """hjs-plm: fresh-but-never-swept must not read as idle — status carries
+    last_sweep_ts, 0.0 until the sweep loop completes its first pass."""
+
+    def setUp(self):
+        import types
+        self._saved = {}
+        for name, attrs in {
+            "gateway": {},
+            "gateway.config": {"Platform": lambda *a, **k: "jetstream"},
+            "gateway.platforms": {},
+            "gateway.platforms.base": {"BasePlatformAdapter": type("B", (), {"__init__": lambda s, c, p: None})},
+        }.items():
+            self._saved[name] = sys.modules.get(name)
+            mod = types.ModuleType(name)
+            for k, v in attrs.items():
+                setattr(mod, k, v)
+            sys.modules[name] = mod
+        from hermes_jetstream.adapter import build_adapter
+        self.adapter = build_adapter(object(), Settings())
+
+    def tearDown(self):
+        for name, prev in self._saved.items():
+            if prev is None:
+                del sys.modules[name]
+            else:
+                sys.modules[name] = prev
+        import hermes_jetstream.adapter as ad
+        ad._ACTIVE_CLASS.clear()
+
+    def test_zero_until_first_pass(self):
+        import asyncio
+
+        class Ledger:
+            pruned = 0
+            def prune(self):
+                Ledger.pruned += 1
+        self.adapter._ledger = Ledger()
+        self.assertEqual(self.adapter.status()["last_sweep_ts"], 0.0)
+        asyncio.run(self.adapter._sweep_once())
+        self.assertGreater(self.adapter.status()["last_sweep_ts"], 0.0)
+        self.assertEqual(Ledger.pruned, 1)  # the pass really ran the body
+
+
 class StatusSource(unittest.TestCase):
     def test_tag_sources(self):
         snap = {"cfg": {"dispatched": 1}, "rt-x": {"dispatched": 0}}

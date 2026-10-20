@@ -226,6 +226,9 @@ def _build_class():
             hb = getattr(self.settings, "heartbeat_s", 0)
             st = {
                 "connected": bool(self._bus and self._bus.connected),
+                # hjs-plm: fresh-but-never-swept metrics once looked like attempted=0 idle;
+                # 0.0 now explicitly means the 60s sweep loop has not completed a pass.
+                "last_sweep_ts": getattr(self, "_last_sweep", 0.0),
                 "stream": self.settings.stream,
                 "servers": list(self.settings.servers),
                 "reconnect_count": self._bus.reconnect_count if self._bus else 0,
@@ -272,15 +275,20 @@ def _build_class():
             except Exception:
                 logger.warning("[jetstream] heartbeat publish failed", exc_info=True)
 
+        async def _sweep_once(self) -> None:
+            """One sweep pass, extracted for tests (hjs-plm)."""
+            if self._watches:
+                await self._watches.sweep()
+            self._ledger.prune()  # keep wake-claims.db bounded (7d done rows)
+            self._last_sweep = time.time()  # hjs-plm: freshness clock
+            self._write_metrics()
+            await self._heartbeat()
+
         async def _sweep_loop(self) -> None:
             while True:
                 await asyncio.sleep(60)
                 try:
-                    if self._watches:
-                        await self._watches.sweep()
-                    self._ledger.prune()  # keep wake-claims.db bounded (7d done rows)
-                    self._write_metrics()
-                    await self._heartbeat()
+                    await self._sweep_once()
                 except asyncio.CancelledError:
                     raise
                 except Exception:
