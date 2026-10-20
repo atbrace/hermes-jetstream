@@ -234,6 +234,7 @@ class JetstreamTools:
         rows = store.rows()
         if nm not in rows and len(rows) >= MAX_RUNTIME_ROUTES:
             return f"ERROR: runtime route limit reached ({MAX_RUNTIME_ROUTES}); jetstream_wake unregister first"
+        prior_row = store.rows().get(nm)  # hjs-a7i: re-register over a live route keeps a fallback
         row = {"name": route.name, "subject": route.subject, "durable": route.durable,
                "prompt": route.prompt, "max_payload_chars": route.max_payload_chars,
                "rate_per_min": route.rate_per_min, "min_interval_s": route.min_interval_s,
@@ -246,7 +247,14 @@ class JetstreamTools:
         try:
             await self._live_runtime("add", route)
         except Exception as exc:
-            store.remove(nm)  # rollback: a refused/failed live bind never leaves a stray row
+            # hjs-a7i: rollback restores the PRIOR row (and leaves the prior live sub
+            # alone — a failed bind never touched it); bare remove here destroyed the
+            # working route a refused update was replacing. First-time register keeps
+            # the bare remove: there is nothing to restore.
+            if prior_row is not None:
+                store.put(prior_row)
+            else:
+                store.remove(nm)
             return f"ERROR: live bind failed: {exc}"
         return json.dumps(row, default=str)
 
