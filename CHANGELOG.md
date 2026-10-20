@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Agent-facing API facts landed where agents read** (`hjs-nra`): tool schemas now state the envelope size cap and `{payload}` truncation in their descriptions; CONTRIBUTING gained an Environment facts block (interpreter requirements, the nats-py 2.x `ConsumerConfig`/`metadata` naming traps, and where the caps live). These facts previously lived only in source and cost agents repeat probes every session.
+
 - **Failed runtime re-register no longer destroys the route it was replacing** (`hjs-a7i`): `jetstream_wake` register over an existing name rolled back by deleting the prior row and tearing down nothing; a refused live bind left the working route gone from the store while its live sub could orphan. Rollback now restores the prior row and leaves the prior live sub untouched; the adapter drains a prior sub only after the new bind succeeds, and on drain failure drops the new sub instead of double-binding one durable.
 - **`scripts/wake_authz_digest.py`** (`hjs-oes`): read-only wake-authz digest — effective allowlist (`JETSTREAM_ALLOWED_USERS` + `GATEWAY_ALLOWED_USERS` from the profile `.env`), every route known from on-disk state (runtime store, wake ledger, optional `--settings` for config routes), and a per-route `AUTHORIZED | DROPPED` verdict; exit 1 if any route would be silently dropped. Default-deny drops were a gateway WARNING line only; the digest makes the authz surface agent-readable without log archaeology.
 

@@ -12,6 +12,21 @@ syntax, and `hermes plugins doctor`. The `live` CI job boots a scratch
 it; locally, `NATS_BIN=/path/to/nats-server ./scripts/ci.sh` does the same.
 Run it before requesting review; CI on a PR must be green.
 
+### Environment facts (stop re-discovering these)
+
+- Interpreter: any `python3` passes the hermetic gate (the unit tests import
+  `nats` nowhere). The live drills need `pip install 'nats-py>=2.7,<3' nkeys` —
+  the exact pin CI uses.
+- nats-py 2.x naming traps (measured, paid twice in one evening before they
+  were written down): `ConsumerConfig` kwargs are `deliver_policy`,
+  `opt_start_seq`, `max_deliver`, `ack_wait`, `filter_subjects` — not
+  `delivery_policy`/`start_sequence`/`max_delivery`; and `msg.metadata` is a
+  property, not callable (`m.metadata.sequence.stream`, `m.metadata.num_delivered`).
+- Caps live in one place: emit cap `max_payload_bytes` (default 32768) and wake
+  prompt `{payload}` truncation `max_payload_chars` (default 2000), both in
+  `docs/CONFIG-REFERENCE.md`. Build oversized payloads in code (script +
+  nats-py publish), never as embedded tool-call literals.
+
 ## Conventions
 
 - One behavior per PR; the commit message says what and why, the diff says how.
