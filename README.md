@@ -32,7 +32,7 @@ Together these make the agent an ordinary citizen of your event flow. Anything o
 hermes plugins install hermes-jetstream
 ```
 
-This resolves the curated catalog entry, which points at the unit directory and installs the pinned release. To install an exact commit instead (pre-pin fixes, --ref): `hermes plugins install atbrace/hermes-jetstream/plugin/hermes_jetstream` — the identifier must end at the unit directory `plugin/hermes_jetstream`, not the repo: a bare-repo install buries `plugin.yaml` below discovery's depth cap and the platform fails at creation with a missing-deps warning (hjs-c03). If nats-py is still missing afterwards, `pip install "nats-py>=2.7,<3"` into the gateway venv.
+This resolves the curated catalog entry, which points at the unit directory and installs the pinned release. To install an exact commit instead (pre-pin fixes, --ref): `hermes plugins install atbrace/hermes-jetstream/plugin/hermes_jetstream` — the identifier must end at the unit directory `plugin/hermes_jetstream`, not the repo: a bare-repo install buries `plugin.yaml` below discovery's depth cap and the platform fails at creation with a missing-deps warning (hjs-c03). A raw git-URL install (`https://github.com/atbrace/hermes-jetstream`) lands the whole clone at the plugin-dir root and the loader cannot see the nested unit — the plugin then silently disappears from the platform list; flatten it once afterwards: `cp -a plugin/hermes_jetstream/* ~/.hermes/plugins/hermes-jetstream/` and restart. If nats-py is still missing afterwards, `pip install "nats-py>=2.7,<3"` into the gateway venv.
 
 ## Quickstart
 
