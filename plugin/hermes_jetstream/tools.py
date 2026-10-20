@@ -412,7 +412,7 @@ def register_tools(ctx) -> None:
         name="jetstream_status", toolset="jetstream", schema={"type": "object", "properties": {}},
         handler=lambda args, **kw: _status(args, kw),
         is_async=False, emoji="📡",
-        description="JetStream platform health: connection, per-route wake counters (dispatched/shed/coalesced/skipped/failed/lost) with source=config|runtime, reconnect_count, lifecycle tap counters, last-attempt/last-dispatch clocks, active watches, last error. Answers 'is my watch alive?' and 'did I lose a wake?' without external monitoring.")
+        description="JetStream platform health: connection, per-route wake counters (dispatched/shed/coalesced/skipped/failed/lost) with source=config|runtime, reconnect_count, lifecycle tap counters, last-attempt/last-dispatch clocks, last_sweep_ts (0 = the 60s sweep loop never completed a pass — fresh-but-unswept is distinguishable from idle), active watches, last error. Answers 'is my watch alive?' and 'did I lose a wake?' without external monitoring.")
 
 
 def _run_async(coro):
