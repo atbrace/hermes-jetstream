@@ -21,7 +21,7 @@ PUBLISH_SCHEMA = {
     "type": "object",
     "properties": {
         "subject": {"type": "string", "description": "Literal JetStream subject (no wildcards); must match the plugin publish allowlist."},
-        "payload": {"description": "JSON payload (object/string). Keep thin: events, not transcripts."},
+        "payload": {"description": "JSON payload (object/string). Keep thin: events, not transcripts. The serialized envelope is capped by max_payload_bytes (default 32768B) — oversized calls are refused by name; build big payloads in code (script + nats-py publish), not as embedded literals."},
         "kind": {"type": "string", "description": "Event kind label for the envelope (e.g. 'ci-result', 'note')."},
     },
     "required": ["subject", "payload"],
@@ -315,7 +315,7 @@ WAKE_SCHEMA = {
                    "description": "Verb (default: list)."},
         "name": {"type": "string", "description": "Route name; stored and reported as rt-<name> (namespaced away from config routes). Required for register/unregister."},
         "subject": {"type": "string", "description": "register: subject/wildcard to wake on; must match subscribe_allowed (refused loudly otherwise)."},
-        "prompt": {"type": "string", "description": "register: wake prompt template, single-brace {subject} {payload} {seq} only."},
+        "prompt": {"type": "string", "description": "register: wake prompt template, single-brace {subject} {payload} {seq} only. {payload} truncates at max_payload_chars (default 2000)."},
         "rate_per_min": {"type": "number", "description": "register: per-route token bucket (default 10); excess is shed."},
         "min_interval_s": {"type": "number", "description": "register: coalescing window, events closer are dropped."},
         "max_age_s": {"type": "number", "description": "register: auto-retire after this age (swept at platform bind); omit = never expires."},
