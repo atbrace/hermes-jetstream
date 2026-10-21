@@ -1124,3 +1124,94 @@ class PlatformFailureNamesItsReason(unittest.TestCase):
         self.assertIn("nats-py", hint)  # remedy 1: the dep itself
         self.assertIn("plugins install", hint)  # remedy 2: the unit-subdir identifier
         self.assertIsNotNone(captured.get("check_fn"))
+
+
+class WakeBindExistingConsumer(unittest.TestCase):
+    """hjs-246: nats-py >=2.16 subscribe_bind raises TypeError when a caller
+    passes a config without deliver_subject for an EXISTING durable push
+    consumer (the new-inbox branch runs only on first create). subscribe_wake
+    must hand back the server's deliver_subject — a push consumer's subject is
+    immutable, so the server's value is the only legal one."""
+
+    def _stub_nats(self):
+        import sys, types
+        nats = types.ModuleType("nats")
+        js_mod = types.ModuleType("nats.js")
+        api = types.ModuleType("nats.js.api")
+        errors = types.ModuleType("nats.js.errors")
+        class ConsumerConfig:
+            deliver_subject = None      # mirror the real dataclass default
+            def __init__(self, **kw):
+                self.__dict__.update(kw)
+        class NotFoundError(Exception):
+            pass
+        api.ConsumerConfig = ConsumerConfig
+        errors.NotFoundError = NotFoundError
+        js_mod.api = api
+        js_mod.errors = errors
+        nats.js = js_mod
+        saved = {k: sys.modules.get(k) for k in ("nats", "nats.js", "nats.js.api", "nats.js.errors")}
+        sys.modules.update({"nats": nats, "nats.js": js_mod,
+                            "nats.js.api": api, "nats.js.errors": errors})
+        return ConsumerConfig, errors.NotFoundError, saved
+
+    def _restore(self, saved):
+        import sys
+        for k, v in saved.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+
+    def _bus(self):
+        import types
+        from hermes_jetstream.bus import NatsBus
+        bus = NatsBus(types.SimpleNamespace(stream="hermes"), "test")
+        return bus
+
+    def test_existing_consumer_binds_with_server_subject(self):
+        import asyncio, sys, types
+        ConsumerConfig, NotFound, saved = self._stub_nats()
+        try:
+            bus = self._bus()
+            seen = {}
+            class FakeJS:
+                async def consumer_info(self, stream, name):
+                    return types.SimpleNamespace(
+                        config=types.SimpleNamespace(deliver_subject="$JS.DS.INBOX.fixed"))
+                async def subscribe(self, subject, **kw):
+                    if getattr(kw["config"], "deliver_subject", None) is None:
+                        raise TypeError("config.deliver_subject is required")
+                    seen.update(kw)
+                    return "sub-handle"
+            bus._js = FakeJS()
+            async def on_msg(msg):
+                pass
+            sub = asyncio.run(bus.subscribe_wake(subject="wake.x", queue="q1", on_message=on_msg))
+            self.assertEqual(sub, "sub-handle")
+            self.assertEqual(seen["config"].deliver_subject, "$JS.DS.INBOX.fixed")
+            self.assertEqual(seen["durable"], "q1")
+        finally:
+            self._restore(saved)
+
+    def test_missing_consumer_creates_without_subject(self):
+        import asyncio, sys, types
+        ConsumerConfig, NotFound, saved = self._stub_nats()
+        try:
+            bus = self._bus()
+            seen = {}
+            class FakeJS:
+                async def consumer_info(self, stream, name):
+                    raise NotFound("no consumer")
+                async def subscribe(self, subject, **kw):
+                    seen.update(kw)   # first-create: deliver_subject stays None, nats-py mints it
+                    return "sub-handle"
+            bus._js = FakeJS()
+            async def on_msg(msg):
+                pass
+            sub = asyncio.run(bus.subscribe_wake(subject="wake.x", queue="q1", on_message=on_msg))
+            self.assertEqual(sub, "sub-handle")
+            self.assertIsNone(seen["config"].deliver_subject)
+            self.assertEqual(seen["config"].max_deliver, 5)
+        finally:
+            self._restore(saved)
