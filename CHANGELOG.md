@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Wake bind survives nats-py >=2.16** (`hjs-246`): `subscribe_wake` now looks the durable consumer up first and, when it exists, copies the server's `deliver_subject` into the caller `ConsumerConfig` — 2.16's `subscribe_bind` requires it and the new-inbox branch runs only on first create, so every boot against pre-existing wake consumers died with `TypeError: config.deliver_subject is required` and the platform stayed down.
+
 - **`status().last_sweep_ts`** (`hjs-plm`, partial): every metrics surface now carries the sweep loop's freshness clock — `0.0` means the loop has never completed a pass, so a fresh-but-unswept read can no longer masquerade as `attempted=0` idle. Remaining hjs-plm items (transcript truncation in the drill harness, payload-in-code drills, restart-skipped re-runnability, drill-id dedupe) are harness-side and tracked separately.
 
 - **Agent-facing API facts landed where agents read** (`hjs-nra`): tool schemas now state the envelope size cap and `{payload}` truncation in their descriptions; CONTRIBUTING gained an Environment facts block (interpreter requirements, the nats-py 2.x `ConsumerConfig`/`metadata` naming traps, and where the caps live). These facts previously lived only in source and cost agents repeat probes every session.

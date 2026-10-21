@@ -143,6 +143,7 @@ class NatsBus:
         identity for deliver_group/durable/queue) — 'queue' below is that identity.
         Server-side storm rails: max_deliver + backoff + max_ack_pending via ConsumerConfig."""
         from nats.js.api import ConsumerConfig
+        from nats.js.errors import NotFoundError
 
         async def _cb(msg) -> None:
             try:
@@ -150,15 +151,28 @@ class NatsBus:
             except Exception:
                 logger.exception("[jetstream] wake callback failed (message redelivers)")
 
+        cfg = ConsumerConfig(
+            max_deliver=5,          # server law: must exceed len(backoff)
+            ack_wait=120,           # wake dispatch is seconds; agent RUNS are fire-and-forget
+            max_ack_pending=100,    # consumer-side backpressure
+            backoff=[1.0, 5.0, 30.0, 120.0],
+        )
+        # nats-py >=2.16 law: subscribe_bind requires config.deliver_subject
+        # whenever the durable already exists — the new-inbox branch runs only
+        # on first create. A push consumer's deliver subject is immutable, so
+        # the server's value is the only legal one: look it up and hand it back.
+        try:
+            info = await self._js.consumer_info(self.settings.stream, queue)
+        except NotFoundError:
+            info = None
+        if info is not None:
+            server_subject = getattr(info.config, "deliver_subject", None)
+            if server_subject:
+                cfg.deliver_subject = server_subject
         sub = await self._js.subscribe(
             subject, queue=queue, cb=_cb, durable=queue, stream=self.settings.stream,
             manual_ack=True,
-            config=ConsumerConfig(
-                max_deliver=5,          # server law: must exceed len(backoff)
-                ack_wait=120,           # wake dispatch is seconds; agent RUNS are fire-and-forget
-                max_ack_pending=100,    # consumer-side backpressure
-                backoff=[1.0, 5.0, 30.0, 120.0],
-            ),
+            config=cfg,
         )
         self._subs.append(sub)
         return sub  # hjs-tr9: runtime unregister needs the handle (drain on demand)
