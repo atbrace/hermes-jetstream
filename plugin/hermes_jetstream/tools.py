@@ -407,8 +407,11 @@ def register_tools(ctx) -> None:
             snap = a.status()
             # sys-zga2wb: server-shape rows cost one consumer_info call per wake
             # durable (LIST rows carry no state); hop onto the bus loop, never block it.
+            bus = getattr(a, "_bus", None)
             try:
-                snap["consumer_inventory"] = _run_async(a.consumer_inventory())
+                snap["consumer_inventory"] = (
+                    _run_async(_on_bus_loop(bus, lambda a=a: a.consumer_inventory()))
+                    if bus is not None and bus.connected else [])
             except Exception as exc:
                 snap["consumer_inventory"] = [{"error": str(exc)[:200]}]
             snaps.append(snap)

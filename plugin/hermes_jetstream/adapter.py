@@ -461,12 +461,6 @@ def active_adapters():
         return list(_ACTIVE)
 
 
-def active_status():
-    """Per-adapter watchability snapshots for this process (hjs-htk)."""
-    with _ACTIVE_LOCK:
-        return [a.status() for a in _ACTIVE]
-
-
 def build_adapter(platform_config, settings: Settings):
     """Factory entry (PlatformConfig -> adapter)."""
     if not _ACTIVE_CLASS:
