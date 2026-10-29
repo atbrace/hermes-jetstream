@@ -75,6 +75,7 @@ def _build_class():
             self._hb_last: float = 0.0
             self._runtime_subs: Dict[str, Any] = {}   # hjs-tr9: name -> live sub (drain on unregister)
             self._runtime_names: set = set()           # bound runtime route names (status source tag)
+            self._wake_durables: Dict[str, str] = {}   # sys-zga2wb: route name -> bound durable (status inventory source)
 
         async def connect(self, *, is_reconnect: bool = False) -> bool:
             if self._bus is not None and self._bus.connected:
@@ -90,6 +91,7 @@ def _build_class():
                       or matches_any(r.subject, self.settings.subscribe_allowed)]
             dropped = len(merged) - len(routes)
             self._runtime_names = {r.name for r in routes} & runtime_names
+            self._wake_durables = {r.name: r.durable for r in routes}
             if dropped:
                 logger.warning("[jetstream] %d wake route(s) outside subscribe_allowed — ignored", dropped)
             if not routes:
@@ -202,10 +204,12 @@ def _build_class():
                     return
             self._runtime_subs[route.name] = sub
             self._runtime_names.add(route.name)
+            self._wake_durables[route.name] = route.durable
             self._pipeline._stat(route.name, "seed", 0.0, attempted=False)
 
         async def remove_runtime_route(self, name: str) -> None:
             self._runtime_names.discard(name)
+            self._wake_durables.pop(name, None)
             sub = self._runtime_subs.pop(name, None)
             if sub is None:
                 return  # idempotent: never bound here (or already gone)
@@ -246,6 +250,15 @@ def _build_class():
                 except Exception:
                     pass
             return st
+
+        async def consumer_inventory(self) -> Any:
+            """sys-zga2wb: server-side wake-consumer shape (mode/deliver_subject/pending)
+            for the durables this adapter bound — consumer LIST rows carry no state, so
+            per-durable consumer_info at query time is the only source. Disconnected or
+            wake-less adapter -> [] (the connected flag next to it is the explanation)."""
+            if not (self._bus and self._bus.connected) or not self._wake_durables:
+                return []
+            return await self._bus.consumer_inventory(self._wake_durables.values())
 
         def _write_metrics(self) -> None:
             """Mirror status() into the gateway platform state so it survives without

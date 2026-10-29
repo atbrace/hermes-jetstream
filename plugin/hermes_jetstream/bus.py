@@ -177,6 +177,31 @@ class NatsBus:
         self._subs.append(sub)
         return sub  # hjs-tr9: runtime unregister needs the handle (drain on demand)
 
+    async def consumer_inventory(self, durables) -> List[Dict[str, Any]]:
+        """Server-side wake-consumer shape (sys-zga2wb): consumer LIST rows carry NO
+        state, so per-durable consumer_info at query time is the only source for
+        mode/deliver_subject/pending. NotFound -> mode=missing (the pull-squat class
+        that cost the 10h outage stays visible instead of silent)."""
+        from nats.js.errors import NotFoundError
+        if self._js is None:
+            raise RuntimeError("jetstream not connected")
+        rows = []
+        for name in sorted(set(durables)):
+            try:
+                info = await self._js.consumer_info(self.settings.stream, name)
+            except NotFoundError:
+                rows.append({"durable": name, "mode": "missing"})
+                continue
+            deliver = getattr(getattr(info, "config", None), "deliver_subject", None)
+            rows.append({
+                "durable": name,
+                "mode": "push" if deliver else "pull",
+                "deliver_subject": deliver,
+                "num_pending": getattr(info, "num_pending", None),
+                "num_ack_pending": getattr(info, "num_ack_pending", None),
+            })
+        return rows
+
     async def fetch(self, subject: str, *, timeout: float = 30.0, batch: int = 1,
                     config=None) -> List[Any]:
         """Server-held pull (no polling loop): one fetch() call blocks in the server up to timeout.
