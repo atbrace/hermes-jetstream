@@ -1215,3 +1215,60 @@ class WakeBindExistingConsumer(unittest.TestCase):
             self.assertEqual(seen["config"].max_deliver, 5)
         finally:
             self._restore(saved)
+
+
+class ConsumerInventory(unittest.TestCase):
+    """sys-zga2wb: jetstream_status.consumer_inventory rows come from per-durable
+    consumer_info (consumer LIST rows carry no state). Push = deliver_subject set,
+    pull = unset, NotFound = missing — the squat class status was blind to."""
+
+    def _stub_nats(self):
+        import sys, types
+        nats = types.ModuleType("nats")
+        js_mod = types.ModuleType("nats.js")
+        api = types.ModuleType("nats.js.api")
+        errors = types.ModuleType("nats.js.errors")
+        class NotFoundError(Exception):
+            pass
+        errors.NotFoundError = NotFoundError
+        nats.js = js_mod
+        js_mod.errors = errors
+        saved = {k: sys.modules.get(k) for k in ("nats", "nats.js", "nats.js.api", "nats.js.errors")}
+        sys.modules.update({"nats": nats, "nats.js": js_mod, "nats.js.errors": errors})
+        return errors.NotFoundError, saved
+
+    def test_consumer_inventory_push_pull_missing(self):
+        import asyncio, sys, types
+        NotFound, saved = self._stub_nats()
+        try:
+            from hermes_jetstream.bus import NatsBus
+            bus = NatsBus(types.SimpleNamespace(stream="hermes"), "test")
+            class FakeJS:
+                async def consumer_info(self, stream, name):
+                    assert stream == "hermes"
+                    if name == "jetstream-a":   # push: deliver_subject set
+                        return types.SimpleNamespace(
+                            config=types.SimpleNamespace(deliver_subject="$JS.DS.INBOX.fixed"),
+                            num_pending=3, num_ack_pending=1)
+                    if name == "jetstream-b":   # pull: no deliver_subject
+                        return types.SimpleNamespace(
+                            config=types.SimpleNamespace(deliver_subject=None),
+                            num_pending=0, num_ack_pending=0)
+                    raise NotFound("no consumer")   # squat/never-created durable
+            bus._js = FakeJS()
+            rows = asyncio.run(bus.consumer_inventory(
+                ["jetstream-c", "jetstream-b", "jetstream-a"]))
+            self.assertEqual([r["durable"] for r in rows],
+                             ["jetstream-a", "jetstream-b", "jetstream-c"])  # sorted
+            self.assertEqual(rows[0], {"durable": "jetstream-a", "mode": "push",
+                                       "deliver_subject": "$JS.DS.INBOX.fixed",
+                                       "num_pending": 3, "num_ack_pending": 1})
+            self.assertEqual(rows[1]["mode"], "pull")
+            self.assertIsNone(rows[1]["deliver_subject"])
+            self.assertEqual(rows[2], {"durable": "jetstream-c", "mode": "missing"})
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    sys.modules.pop(k, None)
+                else:
+                    sys.modules[k] = v

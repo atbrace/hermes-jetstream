@@ -398,10 +398,23 @@ def register_tools(ctx) -> None:
 
     def _status(args, kw):
         try:
-            from .adapter import active_status
-            snaps = active_status()
+            from .adapter import active_adapters
+            adapters = active_adapters()
         except Exception:
-            snaps = []
+            adapters = []
+        snaps = []
+        for a in adapters:
+            snap = a.status()
+            # sys-zga2wb: server-shape rows cost one consumer_info call per wake
+            # durable (LIST rows carry no state); hop onto the bus loop, never block it.
+            bus = getattr(a, "_bus", None)
+            try:
+                snap["consumer_inventory"] = (
+                    _run_async(_on_bus_loop(bus, lambda a=a: a.consumer_inventory()))
+                    if bus is not None and bus.connected else [])
+            except Exception as exc:
+                snap["consumer_inventory"] = [{"error": str(exc)[:200]}]
+            snaps.append(snap)
         if not snaps:
             return ("No live gateway adapter in this process (CLI/cron). The platform's "
                     "status surface lives in the gateway; check gateway_state.json "
@@ -412,7 +425,7 @@ def register_tools(ctx) -> None:
         name="jetstream_status", toolset="jetstream", schema={"type": "object", "properties": {}},
         handler=lambda args, **kw: _status(args, kw),
         is_async=False, emoji="📡",
-        description="JetStream platform health: connection, per-route wake counters (dispatched/shed/coalesced/skipped/failed/lost) with source=config|runtime, reconnect_count, lifecycle tap counters, last-attempt/last-dispatch clocks, last_sweep_ts (0 = the 60s sweep loop never completed a pass — fresh-but-unswept is distinguishable from idle), active watches, last error. Answers 'is my watch alive?' and 'did I lose a wake?' without external monitoring.")
+        description="JetStream platform health: connection, per-route wake counters (dispatched/shed/coalesced/skipped/failed/lost) with source=config|runtime, reconnect_count, lifecycle tap counters, last-attempt/last-dispatch clocks, last_sweep_ts (0 = the 60s sweep loop never completed a pass — fresh-but-unswept is distinguishable from idle), consumer_inventory (per wake durable, fetched live: mode push|pull|missing, deliver_subject, num_pending, num_ack_pending — the server-shape a consumer LIST never shows), active watches, last error. Answers 'is my watch alive?' and 'did I lose a wake?' without external monitoring.")
 
 
 def _run_async(coro):
