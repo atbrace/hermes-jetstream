@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Wake ack gates on durable Hermes admission** (`sys-ifgh0t.8`): the pipeline used to ack the moment `dispatch` returned, but the event-job branch fire-and-forgot and the message branch swallowed a gateway refusal — so a busy/draining gateway acked the wake, the ledger row sat claimed, and the 1s-backoff redelivery was eaten as `skipped_duplicate` (wake silently lost). `adapter._dispatch` now returns an admission status from `BasePlatformAdapter`'s `_gateway_accepted` signal; the pipeline acks only accepted/already-completed/active (legacy `None` dispatchers unchanged), and a `retry_refused` nacks the message and releases the ledger claim so the redelivery re-claims cleanly.
+
 - **Wake bind survives nats-py >=2.16** (`hjs-246`): `subscribe_wake` now looks the durable consumer up first and, when it exists, copies the server's `deliver_subject` into the caller `ConsumerConfig` — 2.16's `subscribe_bind` requires it and the new-inbox branch runs only on first create, so every boot against pre-existing wake consumers died with `TypeError: config.deliver_subject is required` and the platform stayed down.
 
 - **`status().last_sweep_ts`** (`hjs-plm`, partial): every metrics surface now carries the sweep loop's freshness clock — `0.0` means the loop has never completed a pass, so a fresh-but-unswept read can no longer masquerade as `attempted=0` idle. Remaining hjs-plm items (transcript truncation in the drill harness, payload-in-code drills, restart-skipped re-runnability, drill-id dedupe) are harness-side and tracked separately.

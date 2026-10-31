@@ -424,9 +424,9 @@ class DurableAckGate(unittest.TestCase):
         """None (pre-gate dispatcher) and already_completed/active are ackable; the
         ledger is not fed a second complete for an already-done row."""
         db = Path(tempfile.mkdtemp()) / "l.db"
-        for status in (None, "already_completed", "active"):
+        for i, status in enumerate((None, "already_completed", "active")):
             pipe, route = self._pipe(lambda r, p, s=status: s, db)
-            m = FakeMsg(b"{}", seq=20)
+            m = FakeMsg(b"{}", seq=20 + i)
             self.assertEqual(self.run_async(pipe.handle_message(m, route)), "dispatched")
             self.assertTrue(m.acked)
 
@@ -439,6 +439,9 @@ class _GatewayStub:
         def __init__(self, **kw):
             self.__dict__.update(kw)
 
+    class MessageType:
+        TEXT = "text"
+
     def __enter__(self):
         import types
         self._saved = {}
@@ -446,8 +449,11 @@ class _GatewayStub:
             "gateway": {},
             "gateway.config": {"Platform": lambda *a, **k: "jetstream"},
             "gateway.platforms": {},
-            "gateway.platforms.base": {"BasePlatformAdapter": type("B", (), {"__init__": lambda s, c, p: None})},
-            "gateway.platforms.event": {"MessageEvent": _GatewayStub.Event},
+            "gateway.platforms.base": {"BasePlatformAdapter": type(
+                "B", (), {"__init__": lambda s, c, p: None,
+                          "handle_message": lambda s, e: s._message_handler(e)})},
+            "gateway.platforms.event": {"MessageEvent": _GatewayStub.Event,
+                                        "MessageType": _GatewayStub.MessageType},
         }.items():
             self._saved[name] = sys.modules.get(name)
             mod = types.ModuleType(name)

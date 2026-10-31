@@ -3,11 +3,15 @@
 Order (all guards BEFORE claim, so a skip is an ack, not a redelivery):
   parse envelope -> no-self-wake -> subject allowlist -> rate bucket -> min-interval
   -> ledger claim -> render prompt -> dispatch -> ledger complete -> ack.
-Ack happens after dispatch is accepted (claim-then-ack); a dispatch failure propagates so
-JetStream redelivers with backoff, and the ledger reclaims after reclaim_after_s.
+Ack happens after dispatch reports DURABLE admission (claim-then-ack): dispatch returns an
+admission status; accepted/already-completed/active (and legacy None) ack, any other status
+is a retryable refusal — the claim is released and the msg nacked, so a redelivery re-claims
+cleanly instead of being eaten as skipped_duplicate (sys-ifgh0t.8). A dispatch failure
+propagates so JetStream redelivers with backoff, and the ledger reclaims after reclaim_after_s.
 """
 from __future__ import annotations
 
+import inspect
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional
@@ -16,6 +20,11 @@ from .envelope import is_self_origin, parse_envelope, render_prompt
 from .subject import matches_any
 
 logger = __import__("logging").getLogger("hermes_jetstream.wake")
+
+# sys-ifgh0t.8: the only dispatch return values that justify an ack. An empty status is
+# legacy (a dispatcher predating the admission gate) and acks as before; anything else —
+# e.g. adapter's retry_refused (busy/draining) — is a durable refusal: nack + release claim.
+ACKABLE_STATUSES = frozenset({"", "accepted", "already_completed", "active"})
 
 
 @dataclass
@@ -148,7 +157,16 @@ class WakePipeline:
         payload = envelope.get("data", envelope) if isinstance(envelope, dict) else (getattr(msg, "data", b""))
         prompt = render_prompt(route.prompt, subject=route.subject, payload=payload, seq=seq,
                                max_payload_chars=route.max_payload_chars)
-        await self.dispatch(route, prompt)
+        status = self.dispatch(route, prompt)
+        if inspect.isawaitable(status):
+            status = await status
+        if str(status or "") not in ACKABLE_STATUSES:
+            # durable refusal: nack (server backoff owns pacing) and release the claim,
+            # so the redelivery re-claims instead of being eaten as skipped_duplicate
+            if dedupe_key:
+                self.ledger.release(dedupe_key)
+            await _nak(msg)
+            return "retry_refused"
         if dedupe_key:
             self.ledger.complete(dedupe_key, now)
         await _ack(msg)
@@ -168,3 +186,10 @@ async def _ack(msg) -> None:
         await msg.ack()
     except Exception:
         pass  # ack on a non-JetStream or closed msg is benign; consumer redelivers if real
+
+
+async def _nak(msg) -> None:
+    try:
+        await msg.nak()          # no delay arg: the consumer's backoff list owns pacing
+    except Exception:
+        pass  # same shape as _ack: unit FakeMsg / closed msg, redelivery if real
