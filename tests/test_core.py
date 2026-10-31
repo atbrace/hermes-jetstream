@@ -420,15 +420,52 @@ class DurableAckGate(unittest.TestCase):
         self.assertTrue(m2.acked)
         self.assertEqual(hits, [])                        # no duplicate effects
 
-    def test_legacy_and_completed_statuses_are_ackable(self):
-        """None (pre-gate dispatcher) and already_completed/active are ackable; the
-        ledger is not fed a second complete for an already-done row."""
+    def test_legacy_none_status_is_ackable(self):
+        """None (pre-gate dispatcher) is ackable — the only legacy ackable status;
+        no dispatcher in repo or core emits any other."""
         db = Path(tempfile.mkdtemp()) / "l.db"
-        for i, status in enumerate((None, "already_completed", "active")):
-            pipe, route = self._pipe(lambda r, p, s=status: s, db)
-            m = FakeMsg(b"{}", seq=20 + i)
-            self.assertEqual(self.run_async(pipe.handle_message(m, route)), "dispatched")
-            self.assertTrue(m.acked)
+        pipe, route = self._pipe(lambda r, p: None, db)
+        m = FakeMsg(b"{}", seq=20)
+        self.assertEqual(self.run_async(pipe.handle_message(m, route)), "dispatched")
+        self.assertTrue(m.acked)
+
+    def test_final_delivery_refusal_records_lost(self):
+        """Refusal on the last allowed delivery: no nack into the void — the loss is
+        recorded (ledger 'lost' row, route 'lost' counter, msg termed), hjs-xq5 shape
+        (sys-ifgh0t.8 review)."""
+        import sqlite3
+        db = Path(tempfile.mkdtemp()) / "l.db"
+        pipe, route = self._pipe(lambda r, p: "retry_refused", db)
+        m = FakeMsg(b"{}", seq=13, attempt=pipe.max_deliver)
+        self.assertEqual(self.run_async(pipe.handle_message(m, route)), "lost")
+        self.assertTrue(m.terminaled and not m.naked and not m.acked)
+        self.assertGreaterEqual(pipe.stats[route.name]["lost"], 1)
+        row = sqlite3.connect(db).execute(
+            "SELECT status FROM wake_claims WHERE dedupe_key='hermes:c:13'").fetchone()
+        self.assertEqual(row[0], "lost")
+
+    def test_refusal_redelivery_on_min_interval_route_redispatches(self):
+        """Refusal rolls back this delivery's guard spend: on a min_interval_s>0 route
+        the 1s-backoff redelivery must re-dispatch, not be acked as 'coalesced' —
+        the swallowed-wake defect re-entering through the coalescing door."""
+        db = Path(tempfile.mkdtemp()) / "l.db"
+        route = WakeRoute(name="gap", subject="ci.result", min_interval_s=120)
+        refused, hits = [True], []
+
+        def disp(r, p):
+            if refused[0]:
+                return "retry_refused"
+            hits.append(p)
+            return "accepted"
+
+        pipe = WakePipeline(["ci.>"], WakeLedger(db, reclaim_after_s=900), disp, "p", "N")
+        m1 = FakeMsg(b"{}", seq=14)
+        self.assertEqual(self.run_async(pipe.handle_message(m1, route)), "retry_refused")
+        refused[0] = False
+        m2 = FakeMsg(b"{}", seq=14)  # same event, redelivered immediately at backoff step 1
+        self.assertEqual(self.run_async(pipe.handle_message(m2, route)), "dispatched")
+        self.assertTrue(m2.acked)
+        self.assertEqual(len(hits), 1)  # one effect, no duplicate
 
 
 class _GatewayStub:

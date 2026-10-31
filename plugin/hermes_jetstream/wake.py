@@ -4,9 +4,11 @@ Order (all guards BEFORE claim, so a skip is an ack, not a redelivery):
   parse envelope -> no-self-wake -> subject allowlist -> rate bucket -> min-interval
   -> ledger claim -> render prompt -> dispatch -> ledger complete -> ack.
 Ack happens after dispatch reports DURABLE admission (claim-then-ack): dispatch returns an
-admission status; accepted/already-completed/active (and legacy None) ack, any other status
-is a retryable refusal — the claim is released and the msg nacked, so a redelivery re-claims
-cleanly instead of being eaten as skipped_duplicate (sys-ifgh0t.8). A dispatch failure
+admission status; accepted (and legacy None) acks, any other status is a retryable refusal —
+this delivery's guard spend is rolled back, the claim is released and the msg nacked, so a
+redelivery re-claims cleanly instead of being eaten as skipped_duplicate or acked as
+coalesced (sys-ifgh0t.8). A refusal on the FINAL delivery records the loss ('lost') instead
+of nacking into the void (hjs-xq5). A dispatch failure
 propagates so JetStream redelivers with backoff, and the ledger reclaims after reclaim_after_s.
 """
 from __future__ import annotations
@@ -24,7 +26,7 @@ logger = __import__("logging").getLogger("hermes_jetstream.wake")
 # sys-ifgh0t.8: the only dispatch return values that justify an ack. An empty status is
 # legacy (a dispatcher predating the admission gate) and acks as before; anything else —
 # e.g. adapter's retry_refused (busy/draining) — is a durable refusal: nack + release claim.
-ACKABLE_STATUSES = frozenset({"", "accepted", "already_completed", "active"})
+ACKABLE_STATUSES = frozenset({"", "accepted"})
 
 
 @dataclass
@@ -55,12 +57,14 @@ class WakePipeline:
                                                "skipped_self_origin": 0,
                                                "skipped_not_allowed": 0,
                                                "skipped_duplicate": 0, "failed": 0,
+                                               "retry_refused": 0,
                                                "lost": 0})
         if attempted:
             s["attempted"] += 1
             s["last_attempt_ts"] = now
         if verdict in ("dispatched", "shed", "coalesced", "skipped_self_origin",
-                       "skipped_not_allowed", "skipped_duplicate", "failed", "lost"):
+                       "skipped_not_allowed", "skipped_duplicate", "failed",
+                       "retry_refused", "lost"):
             s[verdict] += 1
         if verdict == "dispatched":
             s["last_dispatch_ts"] = now
@@ -161,8 +165,19 @@ class WakePipeline:
         if inspect.isawaitable(status):
             status = await status
         if str(status or "") not in ACKABLE_STATUSES:
-            # durable refusal: nack (server backoff owns pacing) and release the claim,
-            # so the redelivery re-claims instead of being eaten as skipped_duplicate
+            # durable refusal: hand back this delivery's guard spend so the backoff
+            # redelivery isn't acked as shed/coalesced (the swallowed-wake defect
+            # re-entering through the coalescing door, sys-ifgh0t.8 review)
+            b = self._buckets.get(route.name)
+            if b is not None:
+                b.tokens += 1.0
+                b.min_seen = 0.0
+            if attempt >= self.max_deliver:
+                # final delivery: the server will not redeliver — record the loss
+                # durably (ledger 'lost' row, keeping mark_lost's claim guard) instead
+                # of nacking into the void (hjs-xq5)
+                await self._record_final_delivery(msg, route)
+                return "lost"
             if dedupe_key:
                 self.ledger.release(dedupe_key)
             await _nak(msg)
