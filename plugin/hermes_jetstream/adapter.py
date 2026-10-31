@@ -333,10 +333,13 @@ def _build_class():
                 logger.debug("[jetstream] session_id resolution failed", exc_info=True)
             return False
 
-        async def _dispatch(self, route, prompt: str) -> None:
+        async def _dispatch(self, route, prompt: str) -> str:
+            """Return a wake-pipeline admission status (see wake.ACKABLE_STATUSES):
+            'accepted' only once the gateway durably holds this event; 'retry_refused'
+            makes the pipeline nack + release the ledger claim (sys-ifgh0t.8)."""
             if route.job:
                 await self._fire_event_job(route, prompt)
-                return
+                return "accepted"
             if not self._message_handler:
                 raise RuntimeError("gateway message handler not attached yet")  # -> redelivery
             chat_id = f"jetstream:{route.name}"
@@ -345,6 +348,10 @@ def _build_class():
                                        user_name=route.name)
             event = _message_event(text=prompt, source=source)
             await self.handle_message(event)
+            # BasePlatformAdapter's durable-admission signal: True iff the event is
+            # running under the session guard or durably queued (shared-runtime FIFO,
+            # busy slot, burst commit). False = refused/draining: nack, don't ack.
+            return "accepted" if getattr(event, "_gateway_accepted", False) else "retry_refused"
 
         async def _fire_event_job(self, route, prompt: str) -> None:
             """Event job: fire a cron job on this event (webhook cron_job semantics:

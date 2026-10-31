@@ -108,7 +108,9 @@ die quietly:
 - **Wake semantics are at-most-once per event.** Delivery is at-least-once, but
   claim-then-ack plus the wake ledger means one event fires your route at most
   once — and possibly zero times (shed by the rate rail, dropped by
-  `min_interval_s` coalescing, or `lost` after the redelivery budget). There is
+  `min_interval_s` coalescing, or `lost` after the redelivery budget). The ack
+  waits for durable Hermes admission: a busy/draining gateway nacks and releases
+  the claim, so the redelivery retries instead of being eaten as a duplicate. There is
   no DLQ: losses are recorded in the ledger and counted in
   `jetstream_status.lost`; replay after a loss is your call (`nats_fetch` or
   republish upstream).

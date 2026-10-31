@@ -54,6 +54,15 @@ class WakeLedger:
             self._db.commit()
             return True
 
+    def release(self, dedupe_key: str) -> None:
+        """sys-ifgh0t.8: the dispatch durably REFUSED this wake — drop the in-flight
+        claim so the nacked redelivery re-claims now instead of being swallowed as
+        skipped_duplicate inside reclaim_after_s. done/lost rows are never touched."""
+        with self._lock:
+            self._db.execute("DELETE FROM wake_claims WHERE dedupe_key=? AND status='claimed'",
+                             (dedupe_key,))
+            self._db.commit()
+
     def complete(self, dedupe_key: str, now: float | None = None) -> None:
         now = now if now is not None else time.time()
         with self._lock:
