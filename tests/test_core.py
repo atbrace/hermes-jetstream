@@ -207,6 +207,7 @@ class FakeMsg:
         self._md = (stream, consumer, seq, attempt)
         self.acked = False
         self.naked = False
+        self.naked_delay = None
         self.terminaled = False
 
     @property
@@ -219,8 +220,9 @@ class FakeMsg:
     async def ack(self):
         self.acked = True
 
-    async def nak(self, delay=0):
+    async def nak(self, delay=None):
         self.naked = True
+        self.naked_delay = delay
 
     async def term(self):
         self.terminaled = True
@@ -371,6 +373,127 @@ class WakePipelineGuards(unittest.TestCase):
         self.assertEqual(self.run_async(pipe(lambda r, p: asyncio.sleep(0))
                                         .handle_message(m3, route)), "dispatched")
         self.assertTrue(m3.acked)                         # ack AFTER dispatch accepted
+
+
+class DurableAckGate(unittest.TestCase):
+    """sys-ifgh0t.8: the ack gates on a DURABLE admission status from dispatch.
+    A retryable refusal (busy/draining) nacks and releases the claim so redelivery
+    is not eaten as skipped_duplicate; legacy None dispatches stay ackable."""
+
+    def run_async(self, coro):
+        return asyncio.run(coro)
+
+    def _pipe(self, dispatch, db):
+        route = WakeRoute(name="gate", subject="ci.result")
+        return WakePipeline(["ci.>"], WakeLedger(db, reclaim_after_s=900),
+                            dispatch, "p", "N"), route
+
+    def test_refusal_nacks_and_redelivery_cleanly_reclaims(self):
+        """Kill-window before admission: dispatch refuses durably -> msg nacked (not
+        acked), claim released; the SAME event id redelivered right away re-dispatches
+        (no skipped_duplicate swallow inside reclaim_after_s) and then acks once."""
+        db = Path(tempfile.mkdtemp()) / "l.db"
+        pipe, route = self._pipe(lambda r, p: "retry_refused", db)
+        m1 = FakeMsg(b"{}", seq=11)
+        self.assertEqual(self.run_async(pipe.handle_message(m1, route)), "retry_refused")
+        self.assertTrue(m1.naked and not m1.acked)        # redelivery, not ack
+        self.assertIsNone(m1.naked_delay)                 # server backoff owns pacing
+
+        dispatched = []
+        pipe2, _ = self._pipe(lambda r, p: dispatched.append(p) or "accepted", db)
+        m2 = FakeMsg(b"{}", seq=11)
+        self.assertEqual(self.run_async(pipe2.handle_message(m2, route)), "dispatched")
+        self.assertTrue(m2.acked)
+        self.assertEqual(len(dispatched), 1)              # one effect, no duplicate
+
+    def test_completed_run_redelivery_no_duplicate_effects(self):
+        """Kill-window around ack: dispatch accepted, crash before ack lands -> the
+        ledger row is done, so redelivery of the SAME event id acks+skips."""
+        db = Path(tempfile.mkdtemp()) / "l.db"
+        pipe, route = self._pipe(lambda r, p: "accepted", db)
+        self.assertEqual(self.run_async(pipe.handle_message(FakeMsg(b"{}", seq=12), route)),
+                         "dispatched")
+        hits = []
+        pipe2, _ = self._pipe(lambda r, p: hits.append(1) or "accepted", db)
+        m2 = FakeMsg(b"{}", seq=12)
+        self.assertEqual(self.run_async(pipe2.handle_message(m2, route)), "skipped_duplicate")
+        self.assertTrue(m2.acked)
+        self.assertEqual(hits, [])                        # no duplicate effects
+
+    def test_legacy_and_completed_statuses_are_ackable(self):
+        """None (pre-gate dispatcher) and already_completed/active are ackable; the
+        ledger is not fed a second complete for an already-done row."""
+        db = Path(tempfile.mkdtemp()) / "l.db"
+        for status in (None, "already_completed", "active"):
+            pipe, route = self._pipe(lambda r, p, s=status: s, db)
+            m = FakeMsg(b"{}", seq=20)
+            self.assertEqual(self.run_async(pipe.handle_message(m, route)), "dispatched")
+            self.assertTrue(m.acked)
+
+
+class _GatewayStub:
+    """Stub gateway modules so adapter._dispatch builds without hermes (same shape
+    as AdapterRollback/SweepClock in test_runtime_wake)."""
+
+    class Event:
+        def __init__(self, **kw):
+            self.__dict__.update(kw)
+
+    def __enter__(self):
+        import types
+        self._saved = {}
+        for name, attrs in {
+            "gateway": {},
+            "gateway.config": {"Platform": lambda *a, **k: "jetstream"},
+            "gateway.platforms": {},
+            "gateway.platforms.base": {"BasePlatformAdapter": type("B", (), {"__init__": lambda s, c, p: None})},
+            "gateway.platforms.event": {"MessageEvent": _GatewayStub.Event},
+        }.items():
+            self._saved[name] = sys.modules.get(name)
+            mod = types.ModuleType(name)
+            for k, v in attrs.items():
+                setattr(mod, k, v)
+            sys.modules[name] = mod
+        return self
+
+    def __exit__(self, *exc):
+        import hermes_jetstream.adapter as ad
+        for name, prev in self._saved.items():
+            if prev is None:
+                del sys.modules[name]
+            else:
+                sys.modules[name] = prev
+        ad._ACTIVE_CLASS.clear()
+
+
+class AdapterAdmissionStatus(unittest.TestCase):
+    """sys-ifgh0t.8: adapter._dispatch reports whether the gateway DURABLY admitted
+    the event (the BasePlatformAdapter._gateway_accepted contract) instead of
+    silently swallowing refusals."""
+
+    def _adapter(self):
+        from hermes_jetstream.adapter import build_adapter
+        a = build_adapter(object(), Settings())
+        a.build_source = lambda **kw: object()
+        return a
+
+    def test_refusal_maps_to_retry_refused(self):
+        with _GatewayStub():
+            a = self._adapter()
+            async def handler(event):
+                pass                      # never marks _gateway_accepted
+            a._message_handler = handler
+            self.assertEqual(asyncio.run(a._dispatch(WakeRoute(name="r", subject="ci.x"), "p")),
+                             "retry_refused")
+
+    def test_durable_admission_maps_to_accepted(self):
+        with _GatewayStub():
+            a = self._adapter()
+            async def handler(event):
+                event._gateway_accepted = True   # BasePlatformAdapter's real signal
+            a._message_handler = handler
+            self.assertEqual(asyncio.run(a._dispatch(WakeRoute(name="r", subject="ci.x"), "p")),
+                             "accepted")
 
 
 class WakeExtras(unittest.TestCase):
