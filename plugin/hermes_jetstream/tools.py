@@ -283,6 +283,64 @@ class JetstreamTools:
         finally:
             await bus.stop()
 
+    # -- CLI/cron status (sys-ywcfn4) ----------------------------------------
+    async def status_cli_fallback(self) -> str:
+        """No live adapter: this process holds no wake counters and gateway_state.json
+        mirrors the gateway's IN-PROCESS ones — zeroed by every restart, so it can show
+        a live route as dead. Ask the server instead: bound means the route's push
+        consumer is live (push_bound) — mere existence lies both ways: a dead gateway's
+        durable and a pull squatter both exist — reported separately as "exists". The
+        server's delivered counters are the proof-of-life a mirror can't give."""
+        from .bus import consumer_inventory
+        from .runtime_routes import default_store
+        routes = [({"route": r.name, "source": "config"}, r.durable)
+                  for r in self.settings.wake]
+        runtime_note = None
+        try:
+            live, junk = default_store().wake_routes()
+            routes += [({"route": r.name, "source": "runtime"}, r.durable)
+                       for r in live]
+            runtime_note = dict(junk) or None
+        except Exception as exc:
+            runtime_note = f"runtime store unreadable: {exc}"
+        hint = self._stale_mirror_hint()
+        if not routes:
+            return json.dumps({"adapter": "none in this process (CLI/cron)",
+                               "wake_routes": [], "note": "no wake routes configured or registered",
+                               "gateway_state_mirror": hint}, default=str, indent=1)
+        try:
+            rows = {r["durable"]: r for r in await self._ephemeral(
+                lambda js: consumer_inventory(js, self.settings.stream,
+                                              [d for _, d in routes]))}
+        except Exception as exc:
+            return f"ERROR: no live adapter and the server binding probe failed: {exc}; {hint}"
+        out = []
+        for meta, durable in routes:
+            row = rows.get(durable, {"durable": durable, "mode": "missing"})
+            out.append({**meta,
+                        "bound": row["mode"] == "push" and row.get("push_bound") is True,
+                        "exists": row["mode"] != "missing", **row})
+        return json.dumps({"adapter": "none in this process (CLI/cron)",
+                           "source": "jetstream-server (authoritative binding truth)",
+                           "stream": self.settings.stream,
+                           "wake_routes": out, "runtime_junk": runtime_note,
+                           "gateway_state_mirror": hint}, default=str, indent=1)
+
+    @staticmethod
+    def _stale_mirror_hint():
+        """The file earns an mtime, not trust: label it stale-unverified (hjs-246
+        precedent — a pointer without an mtime is how agents got fooled once already)."""
+        try:
+            import datetime
+            from hermes_constants import get_hermes_home
+            p = get_hermes_home() / "gateway_state.json"
+            mt = p.stat().st_mtime
+        except Exception:
+            return None
+        return {"path": str(p),
+                "mtime": datetime.datetime.fromtimestamp(mt).isoformat(timespec="seconds"),
+                "verdict": "stale-unverified: mirrors in-process counters; reset on gateway restart"}
+
 
 def _msg_id(subject: str, body: bytes) -> str:
     # Subject-salted: JetStream dedupes Nats-Msg-Id per STREAM, so an unsalted
@@ -416,16 +474,17 @@ def register_tools(ctx) -> None:
                 snap["consumer_inventory"] = [{"error": str(exc)[:200]}]
             snaps.append(snap)
         if not snaps:
-            return ("No live gateway adapter in this process (CLI/cron). The platform's "
-                    "status surface lives in the gateway; check gateway_state.json "
-                    "platforms.jetstream.metrics instead.")
+            # sys-ywcfn4: the old one-liner pointed agents at gateway_state.json, a
+            # mirror of IN-PROCESS counters that restarts zero — so it read live
+            # routes as dead. Answer from the server instead.
+            return _run_async(_tools().status_cli_fallback())
         return json.dumps(snaps, default=str, indent=1)
 
     ctx.register_tool(
         name="jetstream_status", toolset="jetstream", schema={"type": "object", "properties": {}},
         handler=lambda args, **kw: _status(args, kw),
         is_async=False, emoji="📡",
-        description="JetStream platform health: connection, per-route wake counters (dispatched/shed/coalesced/skipped/failed/lost) with source=config|runtime, reconnect_count, lifecycle tap counters, last-attempt/last-dispatch clocks, last_sweep_ts (0 = the 60s sweep loop never completed a pass — fresh-but-unswept is distinguishable from idle), consumer_inventory (per wake durable, fetched live: mode push|pull|missing, deliver_subject, num_pending, num_ack_pending — the server-shape a consumer LIST never shows), active watches, last error. Answers 'is my watch alive?' and 'did I lose a wake?' without external monitoring.")
+        description="JetStream platform health: connection, per-route wake counters (dispatched/shed/coalesced/skipped/failed/lost) with source=config|runtime, reconnect_count, lifecycle tap counters, last-attempt/last-dispatch clocks, last_sweep_ts (0 = the 60s sweep loop never completed a pass — fresh-but-unswept is distinguishable from idle), consumer_inventory (per wake durable, fetched live: mode push|pull|missing, deliver_subject, num_pending, num_ack_pending, delivered_stream_seq, delivered_last_active — the server-shape a consumer LIST never shows), active watches, last error. Answers 'is my watch alive?' and 'did I lose a wake?' without external monitoring. With no adapter in this process (CLI/cron) it does NOT read the state file — it queries the server for each configured/runtime route's durable consumer (bound + server-side backlog + delivered.last_active) and reports the file only as an mtime-stamped stale-unverified mirror.")
 
 
 def _run_async(coro):
