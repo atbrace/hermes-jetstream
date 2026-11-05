@@ -287,9 +287,10 @@ class JetstreamTools:
     async def status_cli_fallback(self) -> str:
         """No live adapter: this process holds no wake counters and gateway_state.json
         mirrors the gateway's IN-PROCESS ones — zeroed by every restart, so it can show
-        a live route as dead. Ask the server instead: a wake route is bound iff its
-        durable consumer exists there, and the server's delivered counters are the
-        proof-of-life an in-process mirror can't give."""
+        a live route as dead. Ask the server instead: bound means the route's push
+        consumer is live (push_bound) — mere existence lies both ways: a dead gateway's
+        durable and a pull squatter both exist — reported separately as "exists". The
+        server's delivered counters are the proof-of-life a mirror can't give."""
         from .bus import consumer_inventory
         from .runtime_routes import default_store
         routes = [({"route": r.name, "source": "config"}, r.durable)
@@ -316,7 +317,9 @@ class JetstreamTools:
         out = []
         for meta, durable in routes:
             row = rows.get(durable, {"durable": durable, "mode": "missing"})
-            out.append({**meta, "bound": row["mode"] != "missing", **row})
+            out.append({**meta,
+                        "bound": row["mode"] == "push" and row.get("push_bound") is True,
+                        "exists": row["mode"] != "missing", **row})
         return json.dumps({"adapter": "none in this process (CLI/cron)",
                            "source": "jetstream-server (authoritative binding truth)",
                            "stream": self.settings.stream,

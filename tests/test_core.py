@@ -1414,7 +1414,9 @@ class ConsumerInventory(unittest.TestCase):
                     assert stream == "hermes"
                     if name == "jetstream-a":   # push: deliver_subject set
                         return types.SimpleNamespace(
-                            config=types.SimpleNamespace(deliver_subject="$JS.DS.INBOX.fixed"),
+                            config=types.SimpleNamespace(
+                                deliver_subject="$JS.DS.INBOX.fixed"),
+                            push_bound=True,
                             num_pending=3, num_ack_pending=1,
                             delivered=types.SimpleNamespace(
                                 stream_seq=41, last_active="2026-11-05T00:00:00"))
@@ -1430,6 +1432,7 @@ class ConsumerInventory(unittest.TestCase):
                              ["jetstream-a", "jetstream-b", "jetstream-c"])  # sorted
             self.assertEqual(rows[0], {"durable": "jetstream-a", "mode": "push",
                                        "deliver_subject": "$JS.DS.INBOX.fixed",
+                                       "push_bound": True,  # review: live-subscriber truth
                                        "num_pending": 3, "num_ack_pending": 1,
                                        # sys-ywcfn4: server-side proof-of-life rides along
                                        "delivered_stream_seq": 41,
@@ -1448,7 +1451,9 @@ class ConsumerInventory(unittest.TestCase):
 
 class StatusCliFallbackConsumerTruth(unittest.TestCase):
     """sys-ywcfn4: jetstream_status with no live adapter answers from the SERVER (a
-    route is bound iff its durable consumer exists there). gateway_state.json mirrors
+    route is bound iff its push consumer is live — push_bound; existence is a separate
+    fact: a dead gateway's durable and a pull squatter both exist yet are not bound).
+    gateway_state.json mirrors
     the gateway's IN-PROCESS counters — zeroed by every restart — so a live route read
     as dead there; the file now earns an mtime and a stale-unverified label, nothing more.
     Stubbed JetStream manager (fake-bus pattern): NotFoundError is a verdict, not an error."""
@@ -1497,13 +1502,16 @@ class StatusCliFallbackConsumerTruth(unittest.TestCase):
                     self.seen = getattr(self, "seen", []) + [durable]
                     if durable == "jetstream-hjs-peek":
                         return types.SimpleNamespace(
-                            config=types.SimpleNamespace(deliver_subject=None),
+                            config=types.SimpleNamespace(
+                                deliver_subject="$JS.DS.peek"),
+                            push_bound=True,
                             num_pending=5, num_ack_pending=2,
                             delivered=types.SimpleNamespace(stream_seq=41,
                                                             last_active="2026-11-05T06:51:00"))
                     if durable == "jetstream-rt-live":
                         return types.SimpleNamespace(
                             config=types.SimpleNamespace(deliver_subject="$JS.DS.rt"),
+                            push_bound=False,  # dead/restarting gateway: durable live, no subscriber
                             num_pending=0, num_ack_pending=0,
                             delivered=types.SimpleNamespace(stream_seq=9,
                                                             last_active="2026-11-04T22:00:00"))
@@ -1521,15 +1529,19 @@ class StatusCliFallbackConsumerTruth(unittest.TestCase):
         rows = {r["route"]: r for r in payload["wake_routes"]}
         self.assertEqual(set(rows), {"hjs-peek", "ghost", "rt-live"})
         self.assertEqual(rows["hjs-peek"]["source"], "config")
-        self.assertTrue(rows["hjs-peek"]["bound"])
+        self.assertTrue(rows["hjs-peek"]["bound"])          # push + push_bound=True
+        self.assertEqual(rows["hjs-peek"]["mode"], "push")
+        self.assertTrue(rows["hjs-peek"]["exists"])
         self.assertEqual(rows["hjs-peek"]["num_pending"], 5)
         self.assertEqual(rows["hjs-peek"]["num_ack_pending"], 2)
         self.assertEqual(rows["hjs-peek"]["delivered_last_active"], "2026-11-05T06:51:00")
         self.assertEqual(rows["ghost"]["source"], "config")
         self.assertFalse(rows["ghost"]["bound"])           # NotFoundError -> not bound, not error
+        self.assertFalse(rows["ghost"]["exists"])
         self.assertEqual(rows["ghost"]["mode"], "missing")
         self.assertEqual(rows["rt-live"]["source"], "runtime")
-        self.assertTrue(rows["rt-live"]["bound"])          # runtime routes carry the same truth
+        self.assertTrue(rows["rt-live"]["exists"])         # durable is there...
+        self.assertFalse(rows["rt-live"]["bound"])         # ...but push_bound=False: gateway dead, not alive
         self.assertEqual(payload["runtime_junk"], {"rt-junk": "wake route 'rt-junk' requires a subject"})
         mirror = payload["gateway_state_mirror"]
         self.assertIn("stale-unverified", mirror["verdict"])

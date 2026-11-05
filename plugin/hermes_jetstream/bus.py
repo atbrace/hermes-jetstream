@@ -47,6 +47,9 @@ async def consumer_inventory(js, stream: str, durables) -> List[Dict[str, Any]]:
             "durable": name,
             "mode": "push" if deliver else "pull",
             "deliver_subject": deliver,
+            # nats-py ground truth for "a subscriber is live on it right now";
+            # existence alone lies (pull squatter, dead gateway's durable).
+            "push_bound": getattr(info, "push_bound", None),
             "num_pending": getattr(info, "num_pending", None),
             "num_ack_pending": getattr(info, "num_ack_pending", None),
             "delivered_stream_seq": getattr(delivered, "stream_seq", None),

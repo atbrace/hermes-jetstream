@@ -128,8 +128,10 @@ Three plugin-owned surfaces answer "is my watch alive?":
    every 60 s for anything that reads files (dashboard, cron probe, your own collector).
    The file mirrors the gateway's IN-PROCESS counters: they reset on restart, so zeros
    there do not mean the route never fired. Outside the gateway process (CLI/cron)
-   `jetstream_status` does not read this file — it asks the server whether each route's
-   durable consumer exists (`bound`, backlog, `delivered_last_active`) and shows the
+   `jetstream_status` does not read this file — it asks the server for each route's
+   consumer truth (`exists`; `bound` only for a live push consumer — a pull squatter or
+   a restarting gateway's durable exists but reads unbound; plus backlog,
+   `delivered_last_active`) and shows the
    file only as an mtime-stamped stale-unverified mirror (sys-ywcfn4).
 3. **Heartbeat events** — with `heartbeat_s` set, a status JSON lands on your subject
    every interval; a plain `nats watch hermes.heartbeat` (or any consumer) is then a
