@@ -126,6 +126,11 @@ Three plugin-owned surfaces answer "is my watch alive?":
    moment the platform binds (zeroed), so an absent row means the platform never came up.
 2. **`gateway_state.json → platforms.jetstream.metrics`** — the same snapshot, mirrored
    every 60 s for anything that reads files (dashboard, cron probe, your own collector).
+   The file mirrors the gateway's IN-PROCESS counters: they reset on restart, so zeros
+   there do not mean the route never fired. Outside the gateway process (CLI/cron)
+   `jetstream_status` does not read this file — it asks the server whether each route's
+   durable consumer exists (`bound`, backlog, `delivered_last_active`) and shows the
+   file only as an mtime-stamped stale-unverified mirror (sys-ywcfn4).
 3. **Heartbeat events** — with `heartbeat_s` set, a status JSON lands on your subject
    every interval; a plain `nats watch hermes.heartbeat` (or any consumer) is then a
    complete dead-man: no message within 2× the interval means the platform is dead.

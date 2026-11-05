@@ -1415,7 +1415,9 @@ class ConsumerInventory(unittest.TestCase):
                     if name == "jetstream-a":   # push: deliver_subject set
                         return types.SimpleNamespace(
                             config=types.SimpleNamespace(deliver_subject="$JS.DS.INBOX.fixed"),
-                            num_pending=3, num_ack_pending=1)
+                            num_pending=3, num_ack_pending=1,
+                            delivered=types.SimpleNamespace(
+                                stream_seq=41, last_active="2026-11-05T00:00:00"))
                     if name == "jetstream-b":   # pull: no deliver_subject
                         return types.SimpleNamespace(
                             config=types.SimpleNamespace(deliver_subject=None),
@@ -1428,9 +1430,13 @@ class ConsumerInventory(unittest.TestCase):
                              ["jetstream-a", "jetstream-b", "jetstream-c"])  # sorted
             self.assertEqual(rows[0], {"durable": "jetstream-a", "mode": "push",
                                        "deliver_subject": "$JS.DS.INBOX.fixed",
-                                       "num_pending": 3, "num_ack_pending": 1})
+                                       "num_pending": 3, "num_ack_pending": 1,
+                                       # sys-ywcfn4: server-side proof-of-life rides along
+                                       "delivered_stream_seq": 41,
+                                       "delivered_last_active": "2026-11-05T00:00:00"})
             self.assertEqual(rows[1]["mode"], "pull")
             self.assertIsNone(rows[1]["deliver_subject"])
+            self.assertIsNone(rows[1]["delivered_last_active"])  # absent field, not a fake 0
             self.assertEqual(rows[2], {"durable": "jetstream-c", "mode": "missing"})
         finally:
             for k, v in saved.items():
@@ -1438,3 +1444,94 @@ class ConsumerInventory(unittest.TestCase):
                     sys.modules.pop(k, None)
                 else:
                     sys.modules[k] = v
+
+
+class StatusCliFallbackConsumerTruth(unittest.TestCase):
+    """sys-ywcfn4: jetstream_status with no live adapter answers from the SERVER (a
+    route is bound iff its durable consumer exists there). gateway_state.json mirrors
+    the gateway's IN-PROCESS counters — zeroed by every restart — so a live route read
+    as dead there; the file now earns an mtime and a stale-unverified label, nothing more.
+    Stubbed JetStream manager (fake-bus pattern): NotFoundError is a verdict, not an error."""
+
+    def test_status_cli_fallback_consumer_truth(self):
+        import sys, types
+        # nats stub: consumer_inventory catches exactly nats.js.errors.NotFoundError
+        nats = types.ModuleType("nats")
+        js_mod = types.ModuleType("nats.js")
+        errors = types.ModuleType("nats.js.errors")
+        class NotFoundError(Exception):
+            pass
+        errors.NotFoundError = NotFoundError
+        nats.js = js_mod
+        js_mod.errors = errors
+        nats_js_api = types.ModuleType("nats.js.api")
+        keys = ("nats", "nats.js", "nats.js.api", "nats.js.errors")
+        saved = {k: sys.modules.get(k) for k in keys}
+        sys.modules.update({"nats": nats, "nats.js": js_mod, "nats.js.api": nats_js_api,
+                            "nats.js.errors": errors})
+        # hermes_constants stub so the mirror hint points at a tmp home, not this box
+        hc = types.ModuleType("hermes_constants")
+        home = Path(tempfile.mkdtemp())
+        (home / "gateway_state.json").write_text("{}")
+        hc.get_hermes_home = lambda: home
+        saved["hermes_constants"] = sys.modules.get("hermes_constants")
+        sys.modules["hermes_constants"] = hc
+        import hermes_jetstream.runtime_routes as rr
+        saved_store = rr.default_store
+        store = rr.RuntimeRouteStore(home / "wake-routes.json")
+        store.put({"name": "rt-live", "subject": "wake.live"})
+        store.put({"name": "rt-junk"})                     # junk row must be named, not vanish
+        rr.default_store = lambda: store
+        try:
+            from hermes_jetstream.tools import JetstreamTools
+            s = Settings(servers=["h:1"], stream="hermes", subscribe_allowed=["wake.>"],
+                         wake=[WakeRoute.from_dict({"name": "hjs-peek", "subject": "wake.peek"}),
+                               WakeRoute.from_dict({"name": "ghost", "subject": "wake.ghost"})])
+            t = JetstreamTools(s, None)
+            def fake_ephemeral(fn):                        # the seam _ephemeral uses for CLI calls
+                async def _go(js):
+                    return await fn(js)
+                return _go(FakeJS())
+            class FakeJS:
+                async def consumer_info(self, stream, durable):
+                    self.seen = getattr(self, "seen", []) + [durable]
+                    if durable == "jetstream-hjs-peek":
+                        return types.SimpleNamespace(
+                            config=types.SimpleNamespace(deliver_subject=None),
+                            num_pending=5, num_ack_pending=2,
+                            delivered=types.SimpleNamespace(stream_seq=41,
+                                                            last_active="2026-11-05T06:51:00"))
+                    if durable == "jetstream-rt-live":
+                        return types.SimpleNamespace(
+                            config=types.SimpleNamespace(deliver_subject="$JS.DS.rt"),
+                            num_pending=0, num_ack_pending=0,
+                            delivered=types.SimpleNamespace(stream_seq=9,
+                                                            last_active="2026-11-04T22:00:00"))
+                    raise NotFoundError(durable)           # ghost: never bound (or squatted)
+            t._ephemeral = fake_ephemeral
+            payload = json.loads(asyncio.run(t.status_cli_fallback()))
+        finally:
+            rr.default_store = saved_store
+            for k, v in saved.items():
+                if v is None:
+                    sys.modules.pop(k, None)
+                else:
+                    sys.modules[k] = v
+
+        rows = {r["route"]: r for r in payload["wake_routes"]}
+        self.assertEqual(set(rows), {"hjs-peek", "ghost", "rt-live"})
+        self.assertEqual(rows["hjs-peek"]["source"], "config")
+        self.assertTrue(rows["hjs-peek"]["bound"])
+        self.assertEqual(rows["hjs-peek"]["num_pending"], 5)
+        self.assertEqual(rows["hjs-peek"]["num_ack_pending"], 2)
+        self.assertEqual(rows["hjs-peek"]["delivered_last_active"], "2026-11-05T06:51:00")
+        self.assertEqual(rows["ghost"]["source"], "config")
+        self.assertFalse(rows["ghost"]["bound"])           # NotFoundError -> not bound, not error
+        self.assertEqual(rows["ghost"]["mode"], "missing")
+        self.assertEqual(rows["rt-live"]["source"], "runtime")
+        self.assertTrue(rows["rt-live"]["bound"])          # runtime routes carry the same truth
+        self.assertEqual(payload["runtime_junk"], {"rt-junk": "wake route 'rt-junk' requires a subject"})
+        mirror = payload["gateway_state_mirror"]
+        self.assertIn("stale-unverified", mirror["verdict"])
+        self.assertTrue(mirror["mtime"])                   # the date decides, not the counters
+        self.assertNotIn("check gateway_state.json", json.dumps(payload))
