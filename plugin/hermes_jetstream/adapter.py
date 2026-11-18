@@ -27,6 +27,44 @@ _ACTIVE = set()
 _ACTIVE_LOCK = __import__("threading").Lock()
 _PLUGIN_CTX: list = []
 
+# Refusal reasons from the cron layer (tools.cronjob_tools._claim_for_manual_run) that mean
+# "a lap is in flight" — the one class of refusal an event wake must NOT discard. Matched as
+# lowercase substrings so a re-worded core message degrades to the old loud-warning path
+# instead of silently re-introducing the drop.
+_LIVE_CLAIM_MARKS = ("already being fired", "already running")
+
+
+def is_live_claim_refusal(result) -> bool:
+    """True when an event fire was refused because the job's live ``fire_claim`` is held
+    by an in-flight run (as opposed to the job being gone/paused/terminal — a stale event
+    must never resurrect those)."""
+    return (not result.get("claimed")
+            and any(m in str(result.get("error") or "").lower() for m in _LIVE_CLAIM_MARKS))
+
+
+def deliver_event_fire(job_ref: str, context: str, fire, queue):
+    """Deliver one event fire with queue-not-drop semantics (hjs-wakeq; tested seam —
+    ``fire``/``queue`` are the cron layer's ``execute_job_for_event`` / ``trigger_job``).
+
+    Returns ``(verdict, reason)`` for logging. Live-claim refusal -> ``queue`` files the
+    durable re-fire intent: trigger_job stamps the run-now marker pair (``manual_run_at``
+    + ``next_run_at`` + the saved slot) into the job store, the scheduler drains it as ONE
+    extra fire after the in-flight lap releases its claim, repeats during the lap coalesce
+    into the one extra lap, and the intent survives a gateway restart. Gone/paused/terminal
+    refusals stay loud warnings — queued unchanged — webhook parity preserved."""
+    result = fire(job_ref, context)
+    if result.get("success"):
+        return "fired", ""
+    error = str(result.get("error") or "")
+    if is_live_claim_refusal(result):
+        try:
+            if queue(job_ref, context) is not None:
+                return "queued", ""
+        except ValueError:
+            return "gone", error  # turned terminal between refusal and queue
+        return "gone", error
+    return "incomplete", error
+
 
 def set_plugin_ctx(ctx) -> None:
     """Called from register(): the ctx owns the consent-gated inject_message rail."""
@@ -358,20 +396,31 @@ def _build_class():
             transient per-run context, job's own prompt/skills/model/delivery apply,
             at-most-once claiming inside the cron layer; bad job ref -> logged, acked,
             same as webhook — a redelivery storm can't revive a deleted job).
-            Queued, not awaited — a run is minutes long (webhook 202 contract)."""
+            Queued, not awaited — a run is minutes long (webhook 202 contract).
+            A wake landing while a lap is in flight QUEUES instead of dropping: the cron
+            layer's run-now marker (trigger_job) is the durable work item (hjs-wakeq)."""
             import asyncio
             from tools.cronjob_tools import execute_job_for_event
+            from cron.jobs import trigger_job
 
             async def _run():
                 try:
+                    context = (f"This run was triggered by JetStream event on '{route.subject}' "
+                               f"via route '{route.name}' (not the schedule).\n\n{prompt}")
                     with self._profile_scope(route.profile):
                         # to_thread copies contextvars, so the profile scope follows (webhook precedent).
-                        result = await asyncio.to_thread(execute_job_for_event, route.job,
-                            f"This run was triggered by JetStream event on '{route.subject}' "
-                            f"via route '{route.name}' (not the schedule).\n\n{prompt}")
-                    if not result.get("success"):
+                        verdict, reason = await asyncio.to_thread(
+                            deliver_event_fire, route.job, context,
+                            execute_job_for_event, trigger_job)
+                    if verdict == "fired":
+                        return
+                    if verdict == "queued":
+                        logger.info("[jetstream] event job=%s route=%s queued behind in-flight "
+                                    "lap (durable run-now intent; drains as one extra fire)",
+                                    route.job, route.name)
+                    else:
                         logger.warning("[jetstream] event job=%s route=%s incomplete: %s",
-                                       route.job, route.name, result.get("error"))
+                                       route.job, route.name, reason)
                 except Exception:
                     logger.exception("[jetstream] event job=%s route=%s failed", route.job, route.name)
 
