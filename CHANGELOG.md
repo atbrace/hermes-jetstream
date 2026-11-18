@@ -14,6 +14,18 @@
 - **README install: git-URL flattening note** (`hjs-mrc`): a raw git-URL install lands the full clone with the unit nested below the loader's view and the plugin silently deregisters; the README now gives the one-line flatten remedy. (Catalog pin staleness was fixed separately upstream — catalog PR NousResearch/hermes-agent#141282, merged 2026-10-19.)
 - **Failed runtime re-register no longer destroys the route it was replacing** (`hjs-a7i`): `jetstream_wake` register over an existing name rolled back by deleting the prior row and tearing down nothing; a refused live bind left the working route gone from the store while its live sub could orphan. Rollback now restores the prior row and leaves the prior live sub untouched; the adapter drains a prior sub only after the new bind succeeds, and on drain failure drops the new sub instead of double-binding one durable.
 - **`scripts/wake_authz_digest.py`** (`hjs-oes`): read-only wake-authz digest — effective allowlist (`JETSTREAM_ALLOWED_USERS` + `GATEWAY_ALLOWED_USERS` from the profile `.env`), every route known from on-disk state (runtime store, wake ledger, optional `--settings` for config routes), and a per-route `AUTHORIZED | DROPPED` verdict; exit 1 if any route would be silently dropped. Default-deny drops were a gateway WARNING line only; the digest makes the authz surface agent-readable without log archaeology.
+## 1.2.1 (2026-11-18)
+
+- **Event-job wakes queue instead of dropping (`hjs-wakeq`)**: a wake whose `job:` fire was
+  refused because a lap is in flight (`Job is already being fired by the scheduler`) used to
+  be acked as an `incomplete` warning — the event was seen by no one and the only backstop
+  was the job's wall-clock schedule. Now such a refusal files a durable re-fire intent via
+  the cron layer's `trigger_job` run-now marker: the scheduler drains it as ONE extra fire
+  after the in-flight lap, repeats during the lap coalesce into that single extra lap, the
+  transient event context rides into the drained run, and the intent survives a gateway
+  restart. Gone/paused/terminal refusals still warn and do NOT queue (a stale event can't
+  resurrect a job). Public API, config keys, and wire behavior unchanged; only the
+  in-flight-refusal branch changes. (`fix(wake)` hjs-wakeq)
 
 ## 1.2.0 (2026-10-18)
 
