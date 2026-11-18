@@ -1547,3 +1547,67 @@ class StatusCliFallbackConsumerTruth(unittest.TestCase):
         self.assertIn("stale-unverified", mirror["verdict"])
         self.assertTrue(mirror["mtime"])                   # the date decides, not the counters
         self.assertNotIn("check gateway_state.json", json.dumps(payload))
+class EventFireQueue(unittest.TestCase):
+    """Queue, don't drop (hjs-wakeq): an event wake that lands while the job's lap is in
+    flight must leave a durable re-fire intent, not `already_firing` silence. The cron
+    layer's ``trigger_job`` (faked here) is the queue: its run-now marker pair in the job
+    store is drained by the scheduler as one extra fire after the in-flight lap
+    (cron/extra_fire — coalesced, crash-safe, restart-safe); that drain machinery is core
+    behavior, not the unit under test here."""
+
+    _LIVE_CLAIM = {"claimed": False, "success": False,
+                   "error": "Job is already being fired by the scheduler; not run again."}
+
+    def _deliver(self, result, calls, queue_ret=None, raises=None):
+        from hermes_jetstream.adapter import deliver_event_fire
+
+        def fire(job, ctx):
+            return dict(result)
+
+        def queue(job, ctx):
+            calls.append((job, ctx))
+            if raises:
+                raise raises
+            return queue_ret
+        return deliver_event_fire("j1", "ctx", fire, queue)
+
+    def test_live_claim_refusal_queues_durable_refire(self):
+        calls = []
+        verdict, _reason = self._deliver(self._LIVE_CLAIM, calls, queue_ret={"id": "j1"})
+        self.assertEqual(verdict, "queued")
+        self.assertEqual(calls, [("j1", "ctx")])  # the transient event context rides along
+
+    def test_already_running_wording_also_queues(self):
+        calls = []
+        verdict, _reason = self._deliver(
+            {"claimed": False, "success": False,
+             "error": "Job is already running (a scheduler tick or another manual run is "
+                      "executing it); not started again."},
+            calls, queue_ret={"id": "j1"})
+        self.assertEqual(verdict, "queued")
+        self.assertEqual(len(calls), 1)
+
+    def test_missing_or_paused_job_is_not_queued(self):
+        # A stale event must never resurrect a gone or paused job (webhook parity).
+        for err in ("Cron job 'gone' not found.",
+                    "Job is paused/disabled; resume it before running."):
+            calls = []
+            verdict, reason = self._deliver(
+                {"claimed": False, "success": False, "error": err}, calls)
+            self.assertEqual(verdict, "incomplete")
+            self.assertEqual(calls, [])
+            self.assertIn(err, reason)
+
+    def test_terminal_race_while_queueing_reports_gone(self):
+        calls = []
+        verdict, _reason = self._deliver(self._LIVE_CLAIM, calls,
+                                         raises=ValueError("job is completed (terminal)"))
+        self.assertEqual(verdict, "gone")
+        self.assertEqual(len(calls), 1)
+
+    def test_successful_fire_is_not_queued(self):
+        calls = []
+        verdict, _reason = self._deliver(
+            {"claimed": True, "success": True, "error": None}, calls)
+        self.assertEqual(verdict, "fired")
+        self.assertEqual(calls, [])
